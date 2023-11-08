@@ -387,6 +387,17 @@
 <a href="#387" id="387">387</a>
 <a href="#388" id="388">388</a>
 <a href="#389" id="389">389</a>
+<a href="#390" id="390">390</a>
+<a href="#391" id="391">391</a>
+<a href="#392" id="392">392</a>
+<a href="#393" id="393">393</a>
+<a href="#394" id="394">394</a>
+<a href="#395" id="395">395</a>
+<a href="#396" id="396">396</a>
+<a href="#397" id="397">397</a>
+<a href="#398" id="398">398</a>
+<a href="#399" id="399">399</a>
+<a href="#400" id="400">400</a>
 </pre></div><pre class="rust"><code><span class="comment">// Licensed to the Apache Software Foundation (ASF) under one
 // or more contributor license agreements.  See the NOTICE file
 // distributed with this work for additional information
@@ -409,7 +420,6 @@
 <span class="kw">use </span>std::fmt::Formatter;
 
 <span class="kw">use </span>async_trait::async_trait;
-<span class="kw">use </span>serde::Deserialize;
 <span class="kw">use </span>bb8::PooledConnection;
 <span class="kw">use </span>bb8::RunError;
 <span class="kw">use </span>etcd_client::Certificate;
@@ -419,6 +429,7 @@
 <span class="kw">use </span>etcd_client::GetOptions;
 <span class="kw">use </span>etcd_client::Identity;
 <span class="kw">use </span>etcd_client::TlsOptions;
+<span class="kw">use </span>serde::Deserialize;
 <span class="kw">use </span>tokio::sync::OnceCell;
 
 <span class="kw">use </span><span class="kw">crate</span>::raw::adapters::kv;
@@ -437,31 +448,31 @@
     /// e.g. &quot;127.0.0.1:23790,127.0.0.1:23791,127.0.0.1:23792&quot; or &quot;http://127.0.0.1:23790,http://127.0.0.1:23791,http://127.0.0.1:23792&quot; or &quot;https://127.0.0.1:23790,https://127.0.0.1:23791,https://127.0.0.1:23792&quot;
     ///
     /// default is &quot;http://127.0.0.1:2379&quot;
-    </span>endpoints: <span class="prelude-ty">Option</span>&lt;String&gt;,
+    </span><span class="kw">pub </span>endpoints: <span class="prelude-ty">Option</span>&lt;String&gt;,
     <span class="doccomment">/// the username to connect etcd service.
     ///
     /// default is None
-    </span>username: <span class="prelude-ty">Option</span>&lt;String&gt;,
+    </span><span class="kw">pub </span>username: <span class="prelude-ty">Option</span>&lt;String&gt;,
     <span class="doccomment">/// the password for authentication
     ///
     /// default is None
-    </span>password: <span class="prelude-ty">Option</span>&lt;String&gt;,
+    </span><span class="kw">pub </span>password: <span class="prelude-ty">Option</span>&lt;String&gt;,
     <span class="doccomment">/// the working directory of the etcd service. Can be &quot;/path/to/dir&quot;
     ///
     /// default is &quot;/&quot;
-    </span>root: <span class="prelude-ty">Option</span>&lt;String&gt;,
+    </span><span class="kw">pub </span>root: <span class="prelude-ty">Option</span>&lt;String&gt;,
     <span class="doccomment">/// certificate authority file path
     ///
     /// default is None
-    </span>ca_path: <span class="prelude-ty">Option</span>&lt;String&gt;,
+    </span><span class="kw">pub </span>ca_path: <span class="prelude-ty">Option</span>&lt;String&gt;,
     <span class="doccomment">/// cert path
     ///
     /// default is None
-    </span>cert_path: <span class="prelude-ty">Option</span>&lt;String&gt;,
+    </span><span class="kw">pub </span>cert_path: <span class="prelude-ty">Option</span>&lt;String&gt;,
     <span class="doccomment">/// key path
     ///
     /// default is None
-    </span>key_path: <span class="prelude-ty">Option</span>&lt;String&gt;,
+    </span><span class="kw">pub </span>key_path: <span class="prelude-ty">Option</span>&lt;String&gt;,
 }
 
 <span class="kw">impl </span>Debug <span class="kw">for </span>EtcdConfig {
@@ -487,7 +498,7 @@
         <span class="kw">if let </span><span class="prelude-val">Some</span>(key_path) = <span class="self">self</span>.key_path.clone() {
             ds.field(<span class="string">&quot;key_path&quot;</span>, <span class="kw-2">&amp;</span>key_path);
         }
-       ds.finish()
+        ds.finish()
     }
 }
 
@@ -598,14 +609,20 @@
     }
 
     <span class="kw">fn </span>build(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>::Accessor&gt; {
-        <span class="kw">let </span>endpoints = <span class="self">self</span>.config.endpoints.clone()
+        <span class="kw">let </span>endpoints = <span class="self">self
+            </span>.config
+            .endpoints
+            .clone()
             .unwrap_or_else(|| DEFAULT_ETCD_ENDPOINTS.to_string());
 
         <span class="kw">let </span>endpoints: Vec&lt;String&gt; = endpoints.split(<span class="string">&#39;,&#39;</span>).map(|s| s.to_string()).collect();
 
         <span class="kw">let </span><span class="kw-2">mut </span>options = ConnectOptions::new();
 
-        <span class="kw">if </span><span class="self">self</span>.config.ca_path.is_some() &amp;&amp; <span class="self">self</span>.config.cert_path.is_some() &amp;&amp; <span class="self">self</span>.config.key_path.is_some() {
+        <span class="kw">if </span><span class="self">self</span>.config.ca_path.is_some()
+            &amp;&amp; <span class="self">self</span>.config.cert_path.is_some()
+            &amp;&amp; <span class="self">self</span>.config.key_path.is_some()
+        {
             <span class="kw">let </span>ca = <span class="self">self</span>.load_pem(<span class="self">self</span>.config.ca_path.clone().unwrap().as_str())<span class="question-mark">?</span>;
             <span class="kw">let </span>key = <span class="self">self</span>.load_pem(<span class="self">self</span>.config.key_path.clone().unwrap().as_str())<span class="question-mark">?</span>;
             <span class="kw">let </span>cert = <span class="self">self</span>.load_pem(<span class="self">self</span>.config.cert_path.clone().unwrap().as_str())<span class="question-mark">?</span>;
@@ -617,11 +634,16 @@
         }
 
         <span class="kw">if let </span><span class="prelude-val">Some</span>(username) = <span class="self">self</span>.config.username.clone() {
-            options = options.with_user(username, <span class="self">self</span>.config.password.clone().unwrap_or(<span class="string">&quot;&quot;</span>.to_string()));
+            options = options.with_user(
+                username,
+                <span class="self">self</span>.config.password.clone().unwrap_or(<span class="string">&quot;&quot;</span>.to_string()),
+            );
         }
 
         <span class="kw">let </span>root = normalize_root(
-            <span class="self">self</span>.config.root.clone()
+            <span class="self">self</span>.config
+                .root
+                .clone()
                 .unwrap_or_else(|| <span class="string">&quot;/&quot;</span>.to_string())
                 .as_str(),
         );
