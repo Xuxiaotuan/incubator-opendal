@@ -17,8 +17,6 @@
  * under the License.
  */
 
-#include "opendal.hpp"
-#include "gtest/gtest.h"
 #include <ctime>
 #include <optional>
 #include <random>
@@ -26,8 +24,11 @@
 #include <unordered_map>
 #include <vector>
 
+#include "gtest/gtest.h"
+#include "opendal.hpp"
+
 class OpendalTest : public ::testing::Test {
-protected:
+ protected:
   opendal::Operator op;
 
   std::string scheme;
@@ -66,14 +67,6 @@ TEST_F(OpendalTest, BasicTest) {
   // create_dir
   op.create_dir(dir_path);
   EXPECT_TRUE(op.is_exist(dir_path));
-
-  // copy
-  op.copy(file_path, file_path_copied);
-  EXPECT_TRUE(op.is_exist(file_path_copied));
-
-  // rename
-  op.rename(file_path_copied, file_path_renamed);
-  EXPECT_TRUE(op.is_exist(file_path_renamed));
 
   // stat
   auto metadata = op.stat(file_path);

@@ -18,13 +18,16 @@
 #[macro_use]
 extern crate napi_derive;
 
+mod capability;
+
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::time::Duration;
 
 use futures::TryStreamExt;
 use napi::bindgen_prelude::*;
-use napi::tokio;
+use opendal::raw::oio::BlockingRead;
+use opendal::raw::oio::ReadExt;
 
 #[napi]
 pub struct Operator(opendal::Operator);
@@ -55,6 +58,12 @@ impl Operator {
         }
 
         Ok(Operator(op))
+    }
+
+    /// Get current operator(service)'s full capability.
+    #[napi]
+    pub fn capability(&self) -> Result<capability::Capability> {
+        Ok(capability::Capability::new(self.0.info().full_capability()))
     }
 
     /// Get current path's metadata **without cache** directly.
@@ -169,6 +178,15 @@ impl Operator {
         Ok(res.into())
     }
 
+    /// Create a reader to read the given path.
+    ///
+    /// It could be used to read large file in a streaming way.
+    #[napi]
+    pub async fn reader(&self, path: String) -> Result<Reader> {
+        let r = self.0.reader(&path).await.map_err(format_napi_error)?;
+        Ok(Reader(r))
+    }
+
     /// Read the whole path into a buffer synchronously.
     ///
     /// ### Example
@@ -179,6 +197,15 @@ impl Operator {
     pub fn read_sync(&self, path: String) -> Result<Buffer> {
         let res = self.0.blocking().read(&path).map_err(format_napi_error)?;
         Ok(res.into())
+    }
+
+    /// Create a reader to read the given path synchronously.
+    ///
+    /// It could be used to read large file in a streaming way.
+    #[napi]
+    pub fn reader_sync(&self, path: String) -> Result<BlockingReader> {
+        let r = self.0.blocking().reader(&path).map_err(format_napi_error)?;
+        Ok(BlockingReader(r))
     }
 
     /// Write bytes into path.
@@ -196,6 +223,24 @@ impl Operator {
             Either::B(s) => s.into_bytes(),
         };
         self.0.write(&path, c).await.map_err(format_napi_error)
+    }
+
+    /// Write multiple bytes into path.
+    ///
+    /// It could be used to write large file in a streaming way.
+    #[napi]
+    pub async fn writer(&self, path: String) -> Result<Writer> {
+        let w = self.0.writer(&path).await.map_err(format_napi_error)?;
+        Ok(Writer(w))
+    }
+
+    /// Write multiple bytes into path synchronously.
+    ///
+    /// It could be used to write large file in a streaming way.
+    #[napi]
+    pub fn writer_sync(&self, path: String) -> Result<BlockingWriter> {
+        let w = self.0.blocking().writer(&path).map_err(format_napi_error)?;
+        Ok(BlockingWriter(w))
     }
 
     /// Write bytes into path synchronously.
@@ -296,70 +341,6 @@ impl Operator {
             .map_err(format_napi_error)
     }
 
-    /// List dir in flat way.
-    ///
-    /// This function will create a new handle to list entries.
-    ///
-    /// An error will be returned if given path doesn't end with /.
-    ///
-    /// ### Example
-    ///
-    /// ```javascript
-    /// const lister = await op.scan("/path/to/dir/");
-    /// while (true) {
-    ///   const entry = await lister.next();
-    ///   if (entry === null) {
-    ///     break;
-    ///   }
-    ///   let meta = await op.stat(entry.path);
-    ///   if (meta.is_file) {
-    ///     // do something
-    ///   }
-    /// }
-    /// `````
-    #[napi]
-    pub async fn scan(&self, path: String) -> Result<Lister> {
-        Ok(Lister(
-            self.0
-                .lister_with(&path)
-                .delimiter("")
-                .await
-                .map_err(format_napi_error)?,
-        ))
-    }
-
-    /// List dir in flat way synchronously.
-    ///
-    /// This function will create a new handle to list entries.
-    ///
-    /// An error will be returned if given path doesn't end with /.
-    ///
-    /// ### Example
-    /// ```javascript
-    /// const lister = op.scan_sync(/path/to/dir/");
-    /// while (true) {
-    ///   const entry = lister.next();
-    ///   if (entry === null) {
-    ///     break;
-    ///   }
-    ///   let meta = op.statSync(entry.path);
-    ///   if (meta.is_file) {
-    ///     // do something
-    ///   }
-    /// }
-    /// `````
-    #[napi]
-    pub fn scan_sync(&self, path: String) -> Result<BlockingLister> {
-        Ok(BlockingLister(
-            self.0
-                .blocking()
-                .lister_with(&path)
-                .delimiter("")
-                .call()
-                .map_err(format_napi_error)?,
-        ))
-    }
-
     /// Delete the given path.
     ///
     /// ### Notes
@@ -415,18 +396,29 @@ impl Operator {
 
     /// List given path.
     ///
-    /// This function will create a new handle to list entries.
+    /// This function will return an array of entries.
     ///
     /// An error will be returned if given path doesn't end with `/`.
     ///
     /// ### Example
+    ///
     /// ```javascript
-    /// const lister = await op.list("path/to/dir/");
-    /// while (true) {
-    ///   const entry = await lister.next();
-    ///   if (entry === null) {
-    ///     break;
+    /// const list = await op.list("path/to/dir/");
+    /// for (let entry of list) {
+    ///   let meta = await op.stat(entry.path);
+    ///   if (meta.isFile) {
+    ///     // do something
     ///   }
+    /// }
+    /// ```
+    ///
+    /// #### List recursively
+    ///
+    /// With `recursive` option, you can list recursively.
+    ///
+    /// ```javascript
+    /// const list = await op.list("path/to/dir/", { recursive: true });
+    /// for (let entry of list) {
     ///   let meta = await op.stat(entry.path);
     ///   if (meta.isFile) {
     ///     // do something
@@ -434,26 +426,49 @@ impl Operator {
     /// }
     /// ```
     #[napi]
-    pub async fn list(&self, path: String) -> Result<Lister> {
-        Ok(Lister(
-            self.0.lister(&path).await.map_err(format_napi_error)?,
-        ))
+    pub async fn list(&self, path: String, options: Option<ListOptions>) -> Result<Vec<Entry>> {
+        let mut l = self.0.list_with(&path);
+        if let Some(options) = options {
+            if let Some(limit) = options.limit {
+                l = l.limit(limit as usize);
+            }
+            if let Some(recursive) = options.recursive {
+                l = l.recursive(recursive);
+            }
+        }
+
+        Ok(l.await
+            .map_err(format_napi_error)?
+            .iter()
+            .map(|e| Entry(e.to_owned()))
+            .collect())
     }
 
     /// List given path synchronously.
     ///
-    /// This function will create a new handle to list entries.
+    /// This function will return a array of entries.
     ///
     /// An error will be returned if given path doesn't end with `/`.
     ///
     /// ### Example
+    ///
     /// ```javascript
-    /// const lister = op.listSync("path/to/dir/");
-    /// while (true) {
-    ///   const entry = lister.next();
-    ///   if (entry === null) {
-    ///     break;
+    /// const list = op.listSync("path/to/dir/");
+    /// for (let entry of list) {
+    ///   let meta = op.statSync(entry.path);
+    ///   if (meta.isFile) {
+    ///     // do something
     ///   }
+    /// }
+    /// ```
+    ///
+    /// #### List recursively
+    ///
+    /// With `recursive` option, you can list recursively.
+    ///
+    /// ```javascript
+    /// const list = op.listSync("path/to/dir/", { recursive: true });
+    /// for (let entry of list) {
     ///   let meta = op.statSync(entry.path);
     ///   if (meta.isFile) {
     ///     // do something
@@ -461,15 +476,22 @@ impl Operator {
     /// }
     /// ```
     #[napi]
-    pub fn list_sync(&self, path: String) -> Result<BlockingLister> {
-        Ok(BlockingLister(
-            self.0
-                .blocking()
-                .lister_with(&path)
-                .delimiter("")
-                .call()
-                .map_err(format_napi_error)?,
-        ))
+    pub fn list_sync(&self, path: String, options: Option<ListOptions>) -> Result<Vec<Entry>> {
+        let mut l = self.0.blocking().list_with(&path);
+        if let Some(options) = options {
+            if let Some(limit) = options.limit {
+                l = l.limit(limit as usize);
+            }
+            if let Some(recursive) = options.recursive {
+                l = l.recursive(recursive);
+            }
+        }
+
+        Ok(l.call()
+            .map_err(format_napi_error)?
+            .iter()
+            .map(|e| Entry(e.to_owned()))
+            .collect())
     }
 
     /// Get a presigned request for read.
@@ -542,6 +564,7 @@ impl Operator {
     }
 }
 
+/// Entry returned by Lister or BlockingLister to represent a path and it's relative metadata.
 #[napi]
 pub struct Entry(opendal::Entry);
 
@@ -554,6 +577,7 @@ impl Entry {
     }
 }
 
+/// Metadata carries all metadata associated with a path.
 #[napi]
 pub struct Metadata(opendal::Metadata);
 
@@ -610,6 +634,138 @@ impl Metadata {
     }
 }
 
+#[napi(object)]
+pub struct ListOptions {
+    pub limit: Option<u32>,
+    pub recursive: Option<bool>,
+}
+
+/// BlockingReader is designed to read data from given path in an blocking
+/// manner.
+#[napi]
+pub struct BlockingReader(opendal::BlockingReader);
+
+#[napi]
+impl BlockingReader {
+    #[napi]
+    pub fn read(&mut self, mut buf: Buffer) -> Result<usize> {
+        self.0.read(buf.as_mut()).map_err(format_napi_error)
+    }
+}
+
+/// Reader is designed to read data from given path in an asynchronous
+/// manner.
+#[napi]
+pub struct Reader(opendal::Reader);
+
+#[napi]
+impl Reader {
+    /// # Safety
+    ///
+    /// > &mut self in async napi methods should be marked as unsafe
+    ///
+    /// Read bytes from this reader into given buffer.
+    #[napi]
+    pub async unsafe fn read(&mut self, mut buf: Buffer) -> Result<usize> {
+        self.0.read(buf.as_mut()).await.map_err(format_napi_error)
+    }
+}
+
+/// BlockingWriter is designed to write data into given path in an blocking
+/// manner.
+#[napi]
+pub struct BlockingWriter(opendal::BlockingWriter);
+
+#[napi]
+impl BlockingWriter {
+    /// # Safety
+    ///
+    /// > &mut self in async napi methods should be marked as unsafe
+    ///
+    /// Write bytes into this writer.
+    ///
+    /// ### Example
+    /// ```javascript
+    /// const writer = await op.writer("path/to/file");
+    /// await writer.write(Buffer.from("hello world"));
+    /// await writer.close();
+    /// ```
+    #[napi]
+    pub unsafe fn write(&mut self, content: Either<Buffer, String>) -> Result<()> {
+        let c = match content {
+            Either::A(buf) => buf.as_ref().to_owned(),
+            Either::B(s) => s.into_bytes(),
+        };
+        self.0.write(c).map_err(format_napi_error)
+    }
+
+    /// # Safety
+    ///
+    /// > &mut self in async napi methods should be marked as unsafe
+    ///
+    /// Close this writer.
+    ///
+    /// ### Example
+    ///
+    /// ```javascript
+    /// const writer = op.writerSync("path/to/file");
+    /// writer.write(Buffer.from("hello world"));
+    /// writer.close();
+    /// ```
+    #[napi]
+    pub unsafe fn close(&mut self) -> Result<()> {
+        self.0.close().map_err(format_napi_error)
+    }
+}
+
+/// Writer is designed to write data into given path in an asynchronous
+/// manner.
+#[napi]
+pub struct Writer(opendal::Writer);
+
+#[napi]
+impl Writer {
+    /// # Safety
+    ///
+    /// > &mut self in async napi methods should be marked as unsafe
+    ///
+    /// Write bytes into this writer.
+    ///
+    /// ### Example
+    /// ```javascript
+    /// const writer = await op.writer("path/to/file");
+    /// await writer.write(Buffer.from("hello world"));
+    /// await writer.close();
+    /// ```
+    #[napi]
+    pub async unsafe fn write(&mut self, content: Either<Buffer, String>) -> Result<()> {
+        let c = match content {
+            Either::A(buf) => buf.as_ref().to_owned(),
+            Either::B(s) => s.into_bytes(),
+        };
+        self.0.write(c).await.map_err(format_napi_error)
+    }
+
+    /// # Safety
+    ///
+    /// > &mut self in async napi methods should be marked as unsafe
+    ///
+    /// Close this writer.
+    ///
+    /// ### Example
+    /// ```javascript
+    /// const writer = await op.writer("path/to/file");
+    /// await writer.write(Buffer.from("hello world"));
+    /// await writer.close();
+    /// ```
+    #[napi]
+    pub async unsafe fn close(&mut self) -> Result<()> {
+        self.0.close().await.map_err(format_napi_error)
+    }
+}
+
+/// Lister is designed to list entries at given path in an asynchronous
+/// manner.
 #[napi]
 pub struct Lister(opendal::Lister);
 
@@ -632,6 +788,8 @@ impl Lister {
     }
 }
 
+/// BlockingLister is designed to list entries at given path in a blocking
+/// manner.
 #[napi]
 pub struct BlockingLister(opendal::BlockingLister);
 
@@ -652,6 +810,7 @@ impl BlockingLister {
     }
 }
 
+/// PresignedRequest is a presigned request return by `presign`.
 #[napi(object)]
 pub struct PresignedRequest {
     /// HTTP method of this request.
@@ -686,6 +845,144 @@ impl PresignedRequest {
     }
 }
 
+pub trait NodeLayer: Send + Sync {
+    fn layer(&self, op: opendal::Operator) -> opendal::Operator;
+}
+
+/// A public layer wrapper
+#[napi]
+pub struct Layer {
+    inner: Box<dyn NodeLayer>,
+}
+
+#[napi]
+impl Operator {
+    /// Add a layer to this operator.
+    #[napi]
+    pub fn layer(&self, layer: External<Layer>) -> Result<Self> {
+        Ok(Self(layer.inner.layer(self.0.clone())))
+    }
+}
+
+impl NodeLayer for opendal::layers::RetryLayer {
+    fn layer(&self, op: opendal::Operator) -> opendal::Operator {
+        op.layer(self.clone())
+    }
+}
+
+/// Retry layer
+///
+/// Add retry for temporary failed operations.
+///
+/// # Notes
+///
+/// This layer will retry failed operations when [`Error::is_temporary`]
+/// returns true. If operation still failed, this layer will set error to
+/// `Persistent` which means error has been retried.
+///
+/// `write` and `blocking_write` don't support retry so far, visit [this issue](https://github.com/apache/incubator-opendal/issues/1223) for more details.
+///
+/// # Examples
+///
+/// ```javascript
+/// const op = new Operator("file", { root: "/tmp" })
+///
+/// const retry = new RetryLayer();
+/// retry.max_times = 3;
+/// retry.jitter = true;
+///
+/// op.layer(retry.build());
+/// ```
+#[derive(Default)]
+#[napi]
+pub struct RetryLayer {
+    jitter: bool,
+    max_times: Option<u32>,
+    factor: Option<f64>,
+    max_delay: Option<f64>,
+    min_delay: Option<f64>,
+}
+
+#[napi]
+impl RetryLayer {
+    #[napi(constructor)]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set jitter of current backoff.
+    ///
+    /// If jitter is enabled, ExponentialBackoff will add a random jitter in `[0, min_delay)
+    /// to current delay.
+    #[napi(setter)]
+    pub fn jitter(&mut self, v: bool) {
+        self.jitter = v;
+    }
+
+    /// Set max_times of current backoff.
+    ///
+    /// Backoff will return `None` if max times is reaching.
+    #[napi(setter)]
+    pub fn max_times(&mut self, v: u32) {
+        self.max_times = Some(v);
+    }
+
+    /// Set factor of current backoff.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if input factor smaller than `1.0`.
+    #[napi(setter)]
+    pub fn factor(&mut self, v: f64) {
+        self.factor = Some(v);
+    }
+
+    /// Set max_delay of current backoff.
+    ///
+    /// Delay will not increasing if current delay is larger than max_delay.
+    ///
+    /// # Notes
+    ///
+    /// - The unit of max_delay is millisecond.
+    #[napi(setter)]
+    pub fn max_delay(&mut self, v: f64) {
+        self.max_delay = Some(v);
+    }
+
+    /// Set min_delay of current backoff.
+    ///
+    /// # Notes
+    ///
+    /// - The unit of min_delay is millisecond.
+    #[napi(setter)]
+    pub fn min_delay(&mut self, v: f64) {
+        self.min_delay = Some(v);
+    }
+
+    #[napi]
+    pub fn build(&self) -> External<Layer> {
+        let mut l = opendal::layers::RetryLayer::default();
+        if self.jitter {
+            l = l.with_jitter();
+        }
+        if let Some(max_times) = self.max_times {
+            l = l.with_max_times(max_times as usize);
+        }
+        if let Some(factor) = self.factor {
+            l = l.with_factor(factor as f32);
+        }
+        if let Some(max_delay) = self.max_delay {
+            l = l.with_max_delay(Duration::from_millis(max_delay as u64));
+        }
+        if let Some(min_delay) = self.min_delay {
+            l = l.with_min_delay(Duration::from_millis(min_delay as u64));
+        }
+
+        External::new(Layer { inner: Box::new(l) })
+    }
+}
+
+/// Format opendal error to napi error.
 fn format_napi_error(err: opendal::Error) -> Error {
     Error::from_reason(format!("{}", err))
 }

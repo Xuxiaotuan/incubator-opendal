@@ -49,8 +49,11 @@ pub fn behavior_blocking_write_tests(op: &Operator) -> Vec<Trial> {
         test_blocking_read_large_range,
         test_blocking_read_not_exist,
         test_blocking_fuzz_range_reader,
+        test_blocking_fuzz_range_reader_with_buffer,
         test_blocking_fuzz_offset_reader,
+        test_blocking_fuzz_offset_reader_with_buffer,
         test_blocking_fuzz_part_reader,
+        test_blocking_fuzz_part_reader_with_buffer,
         test_blocking_delete_file,
         test_blocking_remove_one_file
     )
@@ -58,6 +61,10 @@ pub fn behavior_blocking_write_tests(op: &Operator) -> Vec<Trial> {
 
 /// Create dir with dir path should succeed.
 pub fn test_blocking_create_dir(op: BlockingOperator) -> Result<()> {
+    if !op.info().full_capability().create_dir {
+        return Ok(());
+    }
+
     let path = format!("{}/", uuid::Uuid::new_v4());
 
     op.create_dir(&path)?;
@@ -71,6 +78,10 @@ pub fn test_blocking_create_dir(op: BlockingOperator) -> Result<()> {
 
 /// Create dir on existing dir should succeed.
 pub fn test_blocking_create_dir_existing(op: BlockingOperator) -> Result<()> {
+    if !op.info().full_capability().create_dir {
+        return Ok(());
+    }
+
     let path = format!("{}/", uuid::Uuid::new_v4());
 
     op.create_dir(&path)?;
@@ -155,6 +166,10 @@ pub fn test_blocking_stat_file(op: BlockingOperator) -> Result<()> {
 
 /// Stat existing file should return metadata
 pub fn test_blocking_stat_dir(op: BlockingOperator) -> Result<()> {
+    if !op.info().full_capability().create_dir {
+        return Ok(());
+    }
+
     let path = format!("{}/", uuid::Uuid::new_v4());
 
     op.create_dir(&path).expect("write must succeed");
@@ -335,6 +350,47 @@ pub fn test_blocking_fuzz_range_reader(op: BlockingOperator) -> Result<()> {
     Ok(())
 }
 
+pub fn test_blocking_fuzz_range_reader_with_buffer(op: BlockingOperator) -> Result<()> {
+    if !op.info().full_capability().read_with_range {
+        return Ok(());
+    }
+
+    let path = uuid::Uuid::new_v4().to_string();
+    debug!("Generate a random file: {}", &path);
+    let (content, _) = gen_bytes(op.info().full_capability());
+
+    op.write(&path, content.clone())
+        .expect("write must succeed");
+
+    let mut fuzzer = ObjectReaderFuzzer::new(&path, content.clone(), 0, content.len());
+    let mut o = op
+        .reader_with(&path)
+        .range(0..content.len() as u64)
+        .buffer(4096)
+        .call()?;
+
+    for _ in 0..100 {
+        match fuzzer.fuzz() {
+            ObjectReaderAction::Read(size) => {
+                let mut bs = vec![0; size];
+                let n = o.read(&mut bs)?;
+                fuzzer.check_read(n, &bs[..n])
+            }
+            ObjectReaderAction::Seek(input_pos) => {
+                let actual_pos = o.seek(input_pos)?;
+                fuzzer.check_seek(input_pos, actual_pos)
+            }
+            ObjectReaderAction::Next => {
+                let actual_bs = o.next().map(|v| v.expect("next should not return error"));
+                fuzzer.check_next(actual_bs)
+            }
+        }
+    }
+
+    op.delete(&path).expect("delete must succeed");
+    Ok(())
+}
+
 pub fn test_blocking_fuzz_offset_reader(op: BlockingOperator) -> Result<()> {
     if !op.info().full_capability().read_with_range {
         return Ok(());
@@ -349,6 +405,43 @@ pub fn test_blocking_fuzz_offset_reader(op: BlockingOperator) -> Result<()> {
 
     let mut fuzzer = ObjectReaderFuzzer::new(&path, content.clone(), 0, content.len());
     let mut o = op.reader_with(&path).range(0..).call()?;
+
+    for _ in 0..100 {
+        match fuzzer.fuzz() {
+            ObjectReaderAction::Read(size) => {
+                let mut bs = vec![0; size];
+                let n = o.read(&mut bs)?;
+                fuzzer.check_read(n, &bs[..n])
+            }
+            ObjectReaderAction::Seek(input_pos) => {
+                let actual_pos = o.seek(input_pos)?;
+                fuzzer.check_seek(input_pos, actual_pos)
+            }
+            ObjectReaderAction::Next => {
+                let actual_bs = o.next().map(|v| v.expect("next should not return error"));
+                fuzzer.check_next(actual_bs)
+            }
+        }
+    }
+
+    op.delete(&path).expect("delete must succeed");
+    Ok(())
+}
+
+pub fn test_blocking_fuzz_offset_reader_with_buffer(op: BlockingOperator) -> Result<()> {
+    if !op.info().full_capability().read_with_range {
+        return Ok(());
+    }
+
+    let path = uuid::Uuid::new_v4().to_string();
+    debug!("Generate a random file: {}", &path);
+    let (content, _) = gen_bytes(op.info().full_capability());
+
+    op.write(&path, content.clone())
+        .expect("write must succeed");
+
+    let mut fuzzer = ObjectReaderFuzzer::new(&path, content.clone(), 0, content.len());
+    let mut o = op.reader_with(&path).range(0..).buffer(4096).call()?;
 
     for _ in 0..100 {
         match fuzzer.fuzz() {
@@ -389,6 +482,48 @@ pub fn test_blocking_fuzz_part_reader(op: BlockingOperator) -> Result<()> {
     let mut o = op
         .reader_with(&path)
         .range(offset..offset + length)
+        .call()?;
+
+    for _ in 0..100 {
+        match fuzzer.fuzz() {
+            ObjectReaderAction::Read(size) => {
+                let mut bs = vec![0; size];
+                let n = o.read(&mut bs)?;
+                fuzzer.check_read(n, &bs[..n])
+            }
+            ObjectReaderAction::Seek(input_pos) => {
+                let actual_pos = o.seek(input_pos)?;
+                fuzzer.check_seek(input_pos, actual_pos)
+            }
+            ObjectReaderAction::Next => {
+                let actual_bs = o.next().map(|v| v.expect("next should not return error"));
+                fuzzer.check_next(actual_bs)
+            }
+        }
+    }
+
+    op.delete(&path).expect("delete must succeed");
+    Ok(())
+}
+
+pub fn test_blocking_fuzz_part_reader_with_buffer(op: BlockingOperator) -> Result<()> {
+    if !op.info().full_capability().read_with_range {
+        return Ok(());
+    }
+
+    let path = uuid::Uuid::new_v4().to_string();
+    debug!("Generate a random file: {}", &path);
+    let (content, size) = gen_bytes(op.info().full_capability());
+    let (offset, length) = gen_offset_length(size);
+
+    op.write(&path, content.clone())
+        .expect("write must succeed");
+
+    let mut fuzzer = ObjectReaderFuzzer::new(&path, content, offset as usize, length as usize);
+    let mut o = op
+        .reader_with(&path)
+        .range(offset..offset + length)
+        .buffer(4096)
         .call()?;
 
     for _ in 0..100 {

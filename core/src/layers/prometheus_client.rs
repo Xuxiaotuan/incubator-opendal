@@ -21,7 +21,8 @@ use std::io;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -207,15 +208,16 @@ impl<A: Accessor> Debug for PrometheusAccessor<A> {
     }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl<A: Accessor> LayeredAccessor for PrometheusAccessor<A> {
     type Inner = A;
     type Reader = PrometheusMetricWrapper<A::Reader>;
     type BlockingReader = PrometheusMetricWrapper<A::BlockingReader>;
     type Writer = PrometheusMetricWrapper<A::Writer>;
     type BlockingWriter = PrometheusMetricWrapper<A::BlockingWriter>;
-    type Pager = A::Pager;
-    type BlockingPager = A::BlockingPager;
+    type Lister = A::Lister;
+    type BlockingLister = A::BlockingLister;
 
     fn inner(&self) -> &Self::Inner {
         &self.inner
@@ -336,7 +338,7 @@ impl<A: Accessor> LayeredAccessor for PrometheusAccessor<A> {
         })
     }
 
-    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Pager)> {
+    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Lister)> {
         self.metrics
             .increment_request_total(self.scheme, Operation::List);
         let start_time = Instant::now();
@@ -493,7 +495,7 @@ impl<A: Accessor> LayeredAccessor for PrometheusAccessor<A> {
         })
     }
 
-    fn blocking_list(&self, path: &str, args: OpList) -> Result<(RpList, Self::BlockingPager)> {
+    fn blocking_list(&self, path: &str, args: OpList) -> Result<(RpList, Self::BlockingLister)> {
         self.metrics
             .increment_request_total(self.scheme, Operation::BlockingList);
         let start_time = Instant::now();
@@ -616,7 +618,6 @@ impl<R: oio::BlockingRead> oio::BlockingRead for PrometheusMetricWrapper<R> {
     }
 }
 
-#[async_trait]
 impl<R: oio::Write> oio::Write for PrometheusMetricWrapper<R> {
     fn poll_write(&mut self, cx: &mut Context<'_>, bs: &dyn oio::WriteBuf) -> Poll<Result<usize>> {
         self.inner

@@ -165,8 +165,8 @@ impl Accessor for IpfsBackend {
     type BlockingReader = ();
     type Writer = ();
     type BlockingWriter = ();
-    type Pager = DirStream;
-    type BlockingPager = ();
+    type Lister = oio::PageLister<DirStream>;
+    type BlockingLister = ();
 
     fn info(&self) -> AccessorInfo {
         let mut ma = AccessorInfo::default();
@@ -180,7 +180,6 @@ impl Accessor for IpfsBackend {
                 read_with_range: true,
 
                 list: true,
-                list_with_delimiter_slash: true,
 
                 ..Default::default()
             });
@@ -350,11 +349,9 @@ impl Accessor for IpfsBackend {
         }
     }
 
-    async fn list(&self, path: &str, _: OpList) -> Result<(RpList, Self::Pager)> {
-        Ok((
-            RpList::default(),
-            DirStream::new(Arc::new(self.clone()), path),
-        ))
+    async fn list(&self, path: &str, _: OpList) -> Result<(RpList, Self::Lister)> {
+        let l = DirStream::new(Arc::new(self.clone()), path);
+        Ok((RpList::default(), oio::PageLister::new(l)))
     }
 }
 
@@ -415,7 +412,6 @@ impl IpfsBackend {
 pub struct DirStream {
     backend: Arc<IpfsBackend>,
     path: String,
-    consumed: bool,
 }
 
 impl DirStream {
@@ -423,18 +419,13 @@ impl DirStream {
         Self {
             backend,
             path: path.to_string(),
-            consumed: false,
         }
     }
 }
 
 #[async_trait]
-impl oio::Page for DirStream {
-    async fn next(&mut self) -> Result<Option<Vec<oio::Entry>>> {
-        if self.consumed {
-            return Ok(None);
-        }
-
+impl oio::PageList for DirStream {
+    async fn next_page(&self, ctx: &mut oio::PageContext) -> Result<()> {
         let resp = self.backend.ipfs_list(&self.path).await?;
 
         if resp.status() != StatusCode::OK {
@@ -452,8 +443,6 @@ impl oio::Page for DirStream {
             .map(|v| v.name.unwrap())
             .collect::<Vec<String>>();
 
-        let mut oes = Vec::with_capacity(names.len());
-
         for mut name in names {
             let meta = self
                 .backend
@@ -465,10 +454,10 @@ impl oio::Page for DirStream {
                 name += "/";
             }
 
-            oes.push(oio::Entry::new(&name, meta))
+            ctx.entries.push_back(oio::Entry::new(&name, meta))
         }
 
-        self.consumed = true;
-        Ok(Some(oes))
+        ctx.done = true;
+        Ok(())
     }
 }

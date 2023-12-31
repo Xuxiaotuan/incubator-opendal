@@ -27,7 +27,7 @@ use serde_json::json;
 
 use super::core::GdriveCore;
 use super::error::parse_error;
-use super::pager::GdrivePager;
+use super::lister::GdriveLister;
 use super::writer::GdriveWriter;
 use crate::raw::*;
 use crate::services::gdrive::core::GdriveFile;
@@ -39,14 +39,15 @@ pub struct GdriveBackend {
     pub core: Arc<GdriveCore>,
 }
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl Accessor for GdriveBackend {
     type Reader = IncomingAsyncBody;
     type BlockingReader = ();
     type Writer = oio::OneShotWriter<GdriveWriter>;
     type BlockingWriter = ();
-    type Pager = GdrivePager;
-    type BlockingPager = ();
+    type Lister = oio::PageLister<GdriveLister>;
+    type BlockingLister = ();
 
     fn info(&self) -> AccessorInfo {
         let mut ma = AccessorInfo::default();
@@ -58,8 +59,6 @@ impl Accessor for GdriveBackend {
                 read: true,
 
                 list: true,
-
-                list_with_delimiter_slash: true,
 
                 write: true,
 
@@ -78,22 +77,14 @@ impl Accessor for GdriveBackend {
     }
 
     async fn stat(&self, path: &str, _args: OpStat) -> Result<RpStat> {
-        // Stat root always returns a DIR.
-        if path == "/" {
-            return Ok(RpStat::new(Metadata::new(EntryMode::DIR)));
-        }
-
         let resp = self.core.gdrive_stat(path).await?;
 
-        let status = resp.status();
-
-        match status {
-            StatusCode::OK => {
-                let meta = self.parse_metadata(resp.into_body().bytes().await?)?;
-                Ok(RpStat::new(meta))
-            }
-            _ => Err(parse_error(resp).await?),
+        if resp.status() != StatusCode::OK {
+            return Err(parse_error(resp).await?);
         }
+
+        let meta = self.parse_metadata(resp.into_body().bytes().await?)?;
+        Ok(RpStat::new(meta))
     }
 
     async fn create_dir(&self, path: &str, _args: OpCreateDir) -> Result<RpCreateDir> {
@@ -125,7 +116,11 @@ impl Accessor for GdriveBackend {
         match status {
             StatusCode::OK => {
                 let size = parse_content_length(resp.headers())?;
-                Ok((RpRead::new().with_size(size), resp.into_body()))
+                let range = parse_content_range(resp.headers())?;
+                Ok((
+                    RpRead::new().with_size(size).with_range(range),
+                    resp.into_body(),
+                ))
             }
             _ => Err(parse_error(resp).await?),
         }
@@ -212,15 +207,17 @@ impl Accessor for GdriveBackend {
         }
     }
 
-    async fn list(&self, path: &str, _args: OpList) -> Result<(RpList, Self::Pager)> {
-        Ok((
-            RpList::default(),
-            GdrivePager::new(path.into(), self.core.clone()),
-        ))
+    async fn list(&self, path: &str, _args: OpList) -> Result<(RpList, Self::Lister)> {
+        let l = GdriveLister::new(path.into(), self.core.clone());
+        Ok((RpList::default(), oio::PageLister::new(l)))
     }
 
     async fn copy(&self, from: &str, to: &str, _args: OpCopy) -> Result<RpCopy> {
-        let from_file_id = self.core.get_file_id_by_path(from).await?;
+        let from_file_id = self
+            .core
+            .get_file_id_by_path(from)
+            .await?
+            .ok_or(Error::new(ErrorKind::NotFound, "invalid 'from' path"))?;
 
         // split `to` into parent and name according to the last `/`
         let mut to_path_items: Vec<&str> = to.split('/').filter(|&x| !x.is_empty()).collect();
@@ -233,14 +230,26 @@ impl Accessor for GdriveBackend {
 
         let to_parent = to_path_items.join("/") + "/";
 
-        if to_parent != "/" {
-            self.create_dir(&to_parent, OpCreateDir::new()).await?;
-        }
-
-        let to_parent_id = self.core.get_file_id_by_path(to_parent.as_str()).await?;
+        let to_parent_id =
+            if let Some(id) = self.core.get_file_id_by_path(to_parent.as_str()).await? {
+                id
+            } else {
+                self.create_dir(&to_parent, OpCreateDir::new()).await?;
+                self.core
+                    .get_file_id_by_path(to_parent.as_str())
+                    .await?
+                    .ok_or_else(|| {
+                        Error::new(ErrorKind::Unexpected, "create to's parent folder failed")
+                    })?
+            };
 
         // copy will overwrite `to`, delete it if exist
-        if self.core.get_file_id_by_path(to).await.is_ok() {
+        if self
+            .core
+            .get_file_id_by_path(to)
+            .await
+            .is_ok_and(|id| id.is_some())
+        {
             self.delete(to, OpDelete::new()).await?;
         }
 

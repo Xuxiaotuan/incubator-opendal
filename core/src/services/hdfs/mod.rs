@@ -17,6 +17,6 @@
 
 mod backend;
 pub use backend::HdfsBuilder as Hdfs;
-
-mod pager;
+pub use backend::HdfsConfig;
+mod lister;
 mod writer;

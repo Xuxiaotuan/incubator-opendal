@@ -27,12 +27,11 @@ use http::Request;
 use http::Response;
 use http::StatusCode;
 use log::debug;
+use serde::Deserialize;
 
 use super::error::parse_error;
 use crate::raw::*;
 use crate::*;
-
-use serde::Deserialize;
 
 /// Config for Http service support.
 #[derive(Default, Deserialize)]
@@ -228,8 +227,8 @@ impl Accessor for HttpBackend {
     type BlockingReader = ();
     type Writer = ();
     type BlockingWriter = ();
-    type Pager = ();
-    type BlockingPager = ();
+    type Lister = ();
+    type BlockingLister = ();
 
     fn info(&self) -> AccessorInfo {
         let mut ma = AccessorInfo::default();
@@ -260,9 +259,16 @@ impl Accessor for HttpBackend {
         match status {
             StatusCode::OK | StatusCode::PARTIAL_CONTENT => {
                 let size = parse_content_length(resp.headers())?;
-                Ok((RpRead::new().with_size(size), resp.into_body()))
+                let range = parse_content_range(resp.headers())?;
+                Ok((
+                    RpRead::new().with_size(size).with_range(range),
+                    resp.into_body(),
+                ))
             }
-            StatusCode::RANGE_NOT_SATISFIABLE => Ok((RpRead::new(), IncomingAsyncBody::empty())),
+            StatusCode::RANGE_NOT_SATISFIABLE => {
+                resp.into_body().consume().await?;
+                Ok((RpRead::new().with_size(Some(0)), IncomingAsyncBody::empty()))
+            }
             _ => Err(parse_error(resp).await?),
         }
     }
@@ -376,6 +382,11 @@ mod tests {
             )
             .mount(&mock_server)
             .await;
+        Mock::given(method("HEAD"))
+            .and(path("/hello"))
+            .respond_with(ResponseTemplate::new(200).insert_header("content-length", "13"))
+            .mount(&mock_server)
+            .await;
 
         let mut builder = HttpBuilder::default();
         builder.endpoint(&mock_server.uri());
@@ -403,6 +414,12 @@ mod tests {
                     .insert_header("content-length", "13")
                     .set_body_string("Hello, World!"),
             )
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("HEAD"))
+            .and(path("/hello"))
+            .and(basic_auth(username, password))
+            .respond_with(ResponseTemplate::new(200).insert_header("content-length", "13"))
             .mount(&mock_server)
             .await;
 
@@ -433,6 +450,12 @@ mod tests {
                     .insert_header("content-length", "13")
                     .set_body_string("Hello, World!"),
             )
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("HEAD"))
+            .and(path("/hello"))
+            .and(bearer_token(token))
+            .respond_with(ResponseTemplate::new(200).insert_header("content-length", "13"))
             .mount(&mock_server)
             .await;
 
@@ -483,6 +506,11 @@ mod tests {
                     .insert_header("content-length", "13")
                     .set_body_string("Hello, World!"),
             )
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("HEAD"))
+            .and(path("/hello"))
+            .respond_with(ResponseTemplate::new(200).insert_header("content-length", "13"))
             .mount(&mock_server)
             .await;
 

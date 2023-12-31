@@ -30,15 +30,14 @@ use openssh::SessionBuilder;
 use openssh_sftp_client::file::TokioCompatFile;
 use openssh_sftp_client::Sftp;
 use openssh_sftp_client::SftpOptions;
+use serde::Deserialize;
 
 use super::error::is_not_found;
 use super::error::is_sftp_protocol_error;
-use super::pager::SftpPager;
+use super::lister::SftpLister;
 use super::writer::SftpWriter;
 use crate::raw::*;
 use crate::*;
-
-use serde::Deserialize;
 
 /// Config for Sftpservices support.
 #[derive(Default, Deserialize)]
@@ -247,8 +246,8 @@ impl Accessor for SftpBackend {
     type BlockingReader = ();
     type Writer = SftpWriter;
     type BlockingWriter = ();
-    type Pager = Option<SftpPager>;
-    type BlockingPager = ();
+    type Lister = Option<SftpLister>;
+    type BlockingLister = ();
 
     fn info(&self) -> AccessorInfo {
         let mut am = AccessorInfo::default();
@@ -268,7 +267,6 @@ impl Accessor for SftpBackend {
 
                 list: true,
                 list_with_limit: true,
-                list_with_delimiter_slash: true,
 
                 copy: self.copyable,
                 rename: true,
@@ -385,9 +383,9 @@ impl Accessor for SftpBackend {
         let mut fs = client.fs();
         fs.set_cwd(&self.root);
 
-        let meta = fs.metadata(path).await?;
+        let meta: Metadata = fs.metadata(path).await?.into();
 
-        Ok(RpStat::new(meta.into()))
+        Ok(RpStat::new(meta))
     }
 
     async fn delete(&self, path: &str, _: OpDelete) -> Result<RpDelete> {
@@ -446,7 +444,7 @@ impl Accessor for SftpBackend {
         Ok(RpDelete::default())
     }
 
-    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Pager)> {
+    async fn list(&self, path: &str, _: OpList) -> Result<(RpList, Self::Lister)> {
         let client = self.connect().await?;
         let mut fs = client.fs();
         fs.set_cwd(&self.root);
@@ -467,7 +465,7 @@ impl Accessor for SftpBackend {
 
         Ok((
             RpList::default(),
-            Some(SftpPager::new(dir, path.to_owned(), args.limit())),
+            Some(SftpLister::new(dir, path.to_owned())),
         ))
     }
 }

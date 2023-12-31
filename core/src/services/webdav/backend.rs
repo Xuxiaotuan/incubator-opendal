@@ -29,33 +29,59 @@ use http::Request;
 use http::Response;
 use http::StatusCode;
 use log::debug;
+use serde::Deserialize;
 
 use super::error::parse_error;
-use super::pager::Multistatus;
-use super::pager::WebdavPager;
+use super::lister::Multistatus;
+use super::lister::WebdavLister;
 use super::writer::WebdavWriter;
 use crate::raw::*;
 use crate::*;
+
+/// Config for [WebDAV](https://datatracker.ietf.org/doc/html/rfc4918) backend support.
+#[derive(Default, Deserialize)]
+#[serde(default)]
+#[non_exhaustive]
+pub struct WebdavConfig {
+    /// endpoint of this backend
+    pub endpoint: Option<String>,
+    /// username of this backend
+    pub username: Option<String>,
+    /// password of this backend
+    pub password: Option<String>,
+    /// token of this backend
+    pub token: Option<String>,
+    /// root of this backend
+    pub root: Option<String>,
+}
+
+impl Debug for WebdavConfig {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let mut d = f.debug_struct("WebdavConfig");
+
+        d.field("endpoint", &self.endpoint)
+            .field("username", &self.username)
+            .field("root", &self.root);
+
+        d.finish_non_exhaustive()
+    }
+}
 
 /// [WebDAV](https://datatracker.ietf.org/doc/html/rfc4918) backend support.
 #[doc = include_str!("docs.md")]
 #[derive(Default)]
 pub struct WebdavBuilder {
-    endpoint: Option<String>,
-    username: Option<String>,
-    password: Option<String>,
-    token: Option<String>,
-    root: Option<String>,
+    config: WebdavConfig,
     http_client: Option<HttpClient>,
 }
 
 impl Debug for WebdavBuilder {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let mut de = f.debug_struct("Builder");
-        de.field("endpoint", &self.endpoint);
-        de.field("root", &self.root);
+        let mut d = f.debug_struct("WebdavBuilder");
 
-        de.finish()
+        d.field("config", &self.config);
+
+        d.finish_non_exhaustive()
     }
 }
 
@@ -64,7 +90,7 @@ impl WebdavBuilder {
     ///
     /// For example: `https://example.com`
     pub fn endpoint(&mut self, endpoint: &str) -> &mut Self {
-        self.endpoint = if endpoint.is_empty() {
+        self.config.endpoint = if endpoint.is_empty() {
             None
         } else {
             Some(endpoint.to_string())
@@ -78,7 +104,7 @@ impl WebdavBuilder {
     /// default: no password
     pub fn username(&mut self, username: &str) -> &mut Self {
         if !username.is_empty() {
-            self.username = Some(username.to_owned());
+            self.config.username = Some(username.to_owned());
         }
         self
     }
@@ -88,7 +114,7 @@ impl WebdavBuilder {
     /// default: no password
     pub fn password(&mut self, password: &str) -> &mut Self {
         if !password.is_empty() {
-            self.password = Some(password.to_owned());
+            self.config.password = Some(password.to_owned());
         }
         self
     }
@@ -98,14 +124,14 @@ impl WebdavBuilder {
     /// default: no access token
     pub fn token(&mut self, token: &str) -> &mut Self {
         if !token.is_empty() {
-            self.token = Some(token.to_owned());
+            self.config.token = Some(token.to_owned());
         }
         self
     }
 
     /// Set root path of http backend.
     pub fn root(&mut self, root: &str) -> &mut Self {
-        self.root = if root.is_empty() {
+        self.config.root = if root.is_empty() {
             None
         } else {
             Some(root.to_string())
@@ -145,7 +171,7 @@ impl Builder for WebdavBuilder {
     fn build(&mut self) -> Result<Self::Accessor> {
         debug!("backend build started: {:?}", &self);
 
-        let endpoint = match &self.endpoint {
+        let endpoint = match &self.config.endpoint {
             Some(v) => v,
             None => {
                 return Err(Error::new(ErrorKind::ConfigInvalid, "endpoint is empty")
@@ -162,7 +188,7 @@ impl Builder for WebdavBuilder {
         // returned in the `href`.
         let base_dir = uri.path().trim_end_matches('/');
 
-        let root = normalize_root(&self.root.take().unwrap_or_default());
+        let root = normalize_root(&self.config.root.take().unwrap_or_default());
         debug!("backend use root {}", root);
 
         let client = if let Some(client) = self.http_client.take() {
@@ -175,13 +201,13 @@ impl Builder for WebdavBuilder {
         };
 
         let mut auth = None;
-        if let Some(username) = &self.username {
+        if let Some(username) = &self.config.username {
             auth = Some(format_authorization_by_basic(
                 username,
-                self.password.as_deref().unwrap_or_default(),
+                self.config.password.as_deref().unwrap_or_default(),
             )?);
         }
-        if let Some(token) = &self.token {
+        if let Some(token) = &self.config.token {
             auth = Some(format_authorization_by_bearer(token)?)
         }
 
@@ -223,8 +249,8 @@ impl Accessor for WebdavBackend {
     type BlockingReader = ();
     type Writer = oio::OneShotWriter<WebdavWriter>;
     type BlockingWriter = ();
-    type Pager = Option<WebdavPager>;
-    type BlockingPager = ();
+    type Lister = Option<oio::PageLister<WebdavLister>>;
+    type BlockingLister = ();
 
     fn info(&self) -> AccessorInfo {
         let mut ma = AccessorInfo::default();
@@ -248,7 +274,6 @@ impl Accessor for WebdavBackend {
                 rename: true,
 
                 list: true,
-                list_with_delimiter_slash: true,
 
                 ..Default::default()
             });
@@ -269,9 +294,16 @@ impl Accessor for WebdavBackend {
         match status {
             StatusCode::OK | StatusCode::PARTIAL_CONTENT => {
                 let size = parse_content_length(resp.headers())?;
-                Ok((RpRead::new().with_size(size), resp.into_body()))
+                let range = parse_content_range(resp.headers())?;
+                Ok((
+                    RpRead::new().with_size(size).with_range(range),
+                    resp.into_body(),
+                ))
             }
-            StatusCode::RANGE_NOT_SATISFIABLE => Ok((RpRead::new(), IncomingAsyncBody::empty())),
+            StatusCode::RANGE_NOT_SATISFIABLE => {
+                resp.into_body().consume().await?;
+                Ok((RpRead::new().with_size(Some(0)), IncomingAsyncBody::empty()))
+            }
             _ => Err(parse_error(resp).await?),
         }
     }
@@ -326,11 +358,6 @@ impl Accessor for WebdavBackend {
     }
 
     async fn stat(&self, path: &str, _: OpStat) -> Result<RpStat> {
-        // Stat root always returns a DIR.
-        if path == "/" {
-            return Ok(RpStat::new(Metadata::new(EntryMode::DIR)));
-        }
-
         let mut header_map = HeaderMap::new();
         // not include children
         header_map.insert("Depth", "0".parse().unwrap());
@@ -341,30 +368,23 @@ impl Accessor for WebdavBackend {
         let status = resp.status();
 
         if !status.is_success() {
-            match status {
-                // HTTP Server like nginx could return FORBIDDEN if auto-index
-                // is not enabled, we should ignore them.
-                StatusCode::NOT_FOUND | StatusCode::FORBIDDEN if path.ends_with('/') => {
-                    Ok(RpStat::new(Metadata::new(EntryMode::DIR)))
-                }
-                _ => Err(parse_error(resp).await?),
-            }
-        } else {
-            let bs = resp.into_body().bytes().await?;
-            let result: Multistatus =
-                quick_xml::de::from_reader(bs.reader()).map_err(new_xml_deserialize_error)?;
-            let item = result
-                .response
-                .get(0)
-                .ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::Unexpected,
-                        "Failed getting item stat: bad response",
-                    )
-                })?
-                .parse_into_metadata()?;
-            Ok(RpStat::new(item))
+            return Err(parse_error(resp).await?);
         }
+
+        let bs = resp.into_body().bytes().await?;
+        let result: Multistatus =
+            quick_xml::de::from_reader(bs.reader()).map_err(new_xml_deserialize_error)?;
+        let item = result
+            .response
+            .first()
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::Unexpected,
+                    "Failed getting item stat: bad response",
+                )
+            })?
+            .parse_into_metadata()?;
+        Ok(RpStat::new(item))
     }
 
     async fn delete(&self, path: &str, _: OpDelete) -> Result<RpDelete> {
@@ -378,11 +398,11 @@ impl Accessor for WebdavBackend {
         }
     }
 
-    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Pager)> {
-        if args.delimiter() != "/" {
+    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Lister)> {
+        if args.recursive() {
             return Err(Error::new(
                 ErrorKind::Unsupported,
-                "webdav only support delimiter `/`",
+                "webdav doesn't support list with recursive",
             ));
         }
 
@@ -398,10 +418,9 @@ impl Accessor for WebdavBackend {
                 let result: Multistatus =
                     quick_xml::de::from_reader(bs.reader()).map_err(new_xml_deserialize_error)?;
 
-                Ok((
-                    RpList::default(),
-                    Some(WebdavPager::new(&self.base_dir, &self.root, path, result)),
-                ))
+                let l = WebdavLister::new(&self.base_dir, &self.root, path, result);
+
+                Ok((RpList::default(), Some(oio::PageLister::new(l))))
             }
             StatusCode::NOT_FOUND if path.ends_with('/') => Ok((RpList::default(), None)),
             _ => Err(parse_error(resp).await?),

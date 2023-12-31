@@ -24,7 +24,7 @@ use std::time::Instant;
 use async_trait::async_trait;
 use bytes::Bytes;
 
-use crate::raw::oio::PageOperation;
+use crate::raw::oio::ListOperation;
 use crate::raw::oio::ReadOperation;
 use crate::raw::oio::WriteOperation;
 use crate::raw::*;
@@ -139,15 +139,16 @@ pub struct TimeoutAccessor<A: Accessor> {
     speed: u64,
 }
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl<A: Accessor> LayeredAccessor for TimeoutAccessor<A> {
     type Inner = A;
     type Reader = TimeoutWrapper<A::Reader>;
     type BlockingReader = A::BlockingReader;
     type Writer = TimeoutWrapper<A::Writer>;
     type BlockingWriter = A::BlockingWriter;
-    type Pager = TimeoutWrapper<A::Pager>;
-    type BlockingPager = A::BlockingPager;
+    type Lister = TimeoutWrapper<A::Lister>;
+    type BlockingLister = A::BlockingLister;
 
     fn inner(&self) -> &Self::Inner {
         &self.inner
@@ -177,7 +178,7 @@ impl<A: Accessor> LayeredAccessor for TimeoutAccessor<A> {
             .map(|(rp, r)| (rp, TimeoutWrapper::new(r, self.timeout, self.speed)))
     }
 
-    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Pager)> {
+    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Lister)> {
         tokio::time::timeout(self.timeout, self.inner.list(path, args))
             .await
             .map_err(|_| {
@@ -197,7 +198,7 @@ impl<A: Accessor> LayeredAccessor for TimeoutAccessor<A> {
         self.inner.blocking_write(path, args)
     }
 
-    fn blocking_list(&self, path: &str, args: OpList) -> Result<(RpList, Self::BlockingPager)> {
+    fn blocking_list(&self, path: &str, args: OpList) -> Result<(RpList, Self::BlockingLister)> {
         self.inner.blocking_list(path, args)
     }
 }
@@ -322,7 +323,6 @@ impl<R: oio::Read> oio::Read for TimeoutWrapper<R> {
     }
 }
 
-#[async_trait]
 impl<R: oio::Write> oio::Write for TimeoutWrapper<R> {
     fn poll_write(&mut self, cx: &mut Context<'_>, bs: &dyn oio::WriteBuf) -> Poll<Result<usize>> {
         match self.start {
@@ -415,16 +415,34 @@ impl<R: oio::Write> oio::Write for TimeoutWrapper<R> {
     }
 }
 
-#[async_trait]
-impl<R: oio::Page> oio::Page for TimeoutWrapper<R> {
-    async fn next(&mut self) -> Result<Option<Vec<oio::Entry>>> {
-        tokio::time::timeout(self.timeout, self.inner.next())
-            .await
-            .map_err(|_| {
-                Error::new(ErrorKind::Unexpected, "operation timeout")
-                    .with_operation(PageOperation::Next)
+impl<R: oio::List> oio::List for TimeoutWrapper<R> {
+    fn poll_next(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<oio::Entry>>> {
+        match self.start {
+            Some(start) => {
+                if start.elapsed() > self.timeout {
+                    // Clean up the start time before return ready.
+                    self.start = None;
+
+                    return Poll::Ready(Err(Error::new(
+                        ErrorKind::Unexpected,
+                        "operation timeout",
+                    )
+                    .with_operation(ListOperation::Next)
                     .with_context("timeout", self.timeout.as_secs_f64().to_string())
-                    .set_temporary()
-            })?
+                    .set_temporary()));
+                }
+            }
+            None => {
+                self.start = Some(Instant::now());
+            }
+        }
+
+        match self.inner.poll_next(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(v) => {
+                self.start = None;
+                Poll::Ready(v)
+            }
+        }
     }
 }

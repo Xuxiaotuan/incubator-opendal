@@ -29,22 +29,25 @@ use futures::AsyncRead;
 use futures::AsyncReadExt;
 use http::Uri;
 use log::debug;
+use serde::Deserialize;
 use suppaftp::list::File;
+
 use suppaftp::types::FileType;
 use suppaftp::types::Response;
+use suppaftp::AsyncRustlsConnector;
+use suppaftp::AsyncRustlsFtpStream;
 use suppaftp::FtpError;
-use suppaftp::FtpStream;
+use suppaftp::ImplAsyncFtpStream;
+
 use suppaftp::Status;
 use tokio::sync::OnceCell;
 
-use super::pager::FtpPager;
+use super::lister::FtpLister;
 use super::util::FtpReader;
 use super::writer::FtpWriter;
 use crate::raw::*;
 use crate::services::ftp::writer::FtpWriters;
 use crate::*;
-
-use serde::Deserialize;
 
 /// Config for Ftpservices support.
 #[derive(Default, Deserialize)]
@@ -213,16 +216,18 @@ pub struct Manager {
 
 #[async_trait]
 impl bb8::ManageConnection for Manager {
-    type Connection = FtpStream;
+    type Connection = AsyncRustlsFtpStream;
     type Error = FtpError;
 
     async fn connect(&self) -> std::result::Result<Self::Connection, Self::Error> {
-        let stream = FtpStream::connect(&self.endpoint).await?;
-
+        let stream = ImplAsyncFtpStream::connect(&self.endpoint).await?;
         // switch to secure mode if ssl/tls is on.
         let mut ftp_stream = if self.enable_secure {
             stream
-                .into_secure(TlsConnector::default().into(), &self.endpoint)
+                .into_secure(
+                    AsyncRustlsConnector::from(TlsConnector::default()),
+                    &self.endpoint,
+                )
                 .await?
         } else {
             stream
@@ -255,9 +260,11 @@ impl bb8::ManageConnection for Manager {
         conn.noop().await
     }
 
-    /// Always allow reuse conn.
+    /// Don't allow reuse conn.
+    ///
+    /// We need to investigate why reuse conn will cause error.
     fn has_broken(&self, _: &mut Self::Connection) -> bool {
-        false
+        true
     }
 }
 
@@ -284,8 +291,8 @@ impl Accessor for FtpBackend {
     type BlockingReader = ();
     type Writer = FtpWriters;
     type BlockingWriter = ();
-    type Pager = FtpPager;
-    type BlockingPager = ();
+    type Lister = FtpLister;
+    type BlockingLister = ();
 
     fn info(&self) -> AccessorInfo {
         let mut am = AccessorInfo::default();
@@ -303,7 +310,6 @@ impl Accessor for FtpBackend {
                 create_dir: true,
 
                 list: true,
-                list_with_delimiter_slash: true,
 
                 ..Default::default()
             });
@@ -400,11 +406,6 @@ impl Accessor for FtpBackend {
     }
 
     async fn stat(&self, path: &str, _: OpStat) -> Result<RpStat> {
-        // root dir, return default Metadata with Dir EntryMode.
-        if path == "/" {
-            return Ok(RpStat::new(Metadata::new(EntryMode::DIR)));
-        }
-
         let file = self.ftp_stat(path).await?;
 
         let mode = if file.is_file() {
@@ -414,6 +415,7 @@ impl Accessor for FtpBackend {
         } else {
             EntryMode::Unknown
         };
+
         let mut meta = Metadata::new(mode);
         meta.set_content_length(file.size() as u64);
         meta.set_last_modified(file.modified().into());
@@ -444,7 +446,7 @@ impl Accessor for FtpBackend {
         Ok(RpDelete::default())
     }
 
-    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Pager)> {
+    async fn list(&self, path: &str, _: OpList) -> Result<(RpList, Self::Lister)> {
         let mut ftp_stream = self.ftp_connect(Operation::List).await?;
 
         let pathname = if path == "/" { None } else { Some(path) };
@@ -452,7 +454,7 @@ impl Accessor for FtpBackend {
 
         Ok((
             RpList::default(),
-            FtpPager::new(if path == "/" { "" } else { path }, files, args.limit()),
+            FtpLister::new(if path == "/" { "" } else { path }, files),
         ))
     }
 }

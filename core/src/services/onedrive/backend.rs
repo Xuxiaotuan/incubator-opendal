@@ -29,7 +29,7 @@ use super::graph_model::CreateDirPayload;
 use super::graph_model::ItemType;
 use super::graph_model::OneDriveUploadSessionCreationRequestBody;
 use super::graph_model::OnedriveGetItemBody;
-use super::pager::OnedrivePager;
+use super::lister::OnedriveLister;
 use super::writer::OneDriveWriter;
 use crate::raw::*;
 use crate::*;
@@ -66,8 +66,8 @@ impl Accessor for OnedriveBackend {
     type BlockingReader = ();
     type Writer = oio::OneShotWriter<OneDriveWriter>;
     type BlockingWriter = ();
-    type Pager = OnedrivePager;
-    type BlockingPager = ();
+    type Lister = oio::PageLister<OnedriveLister>;
+    type BlockingLister = ();
 
     fn info(&self) -> AccessorInfo {
         let mut ma = AccessorInfo::default();
@@ -80,7 +80,6 @@ impl Accessor for OnedriveBackend {
                 delete: true,
                 create_dir: true,
                 list: true,
-                list_with_delimiter_slash: true,
                 ..Default::default()
             });
 
@@ -95,7 +94,11 @@ impl Accessor for OnedriveBackend {
         match status {
             StatusCode::OK | StatusCode::PARTIAL_CONTENT => {
                 let size = parse_content_length(resp.headers())?;
-                Ok((RpRead::new().with_size(size), resp.into_body()))
+                let range = parse_content_range(resp.headers())?;
+                Ok((
+                    RpRead::new().with_size(size).with_range(range),
+                    resp.into_body(),
+                ))
             }
             _ => Err(parse_error(resp).await?),
         }
@@ -162,10 +165,10 @@ impl Accessor for OnedriveBackend {
         }
     }
 
-    async fn list(&self, path: &str, _op_list: OpList) -> Result<(RpList, Self::Pager)> {
-        let pager: OnedrivePager = OnedrivePager::new(self.root.clone(), path.into(), self.clone());
+    async fn list(&self, path: &str, _op_list: OpList) -> Result<(RpList, Self::Lister)> {
+        let l = OnedriveLister::new(self.root.clone(), path.into(), self.clone());
 
-        Ok((RpList::default(), pager))
+        Ok((RpList::default(), oio::PageLister::new(l)))
     }
 
     async fn create_dir(&self, path: &str, _: OpCreateDir) -> Result<RpCreateDir> {

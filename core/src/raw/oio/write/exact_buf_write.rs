@@ -19,8 +19,6 @@ use std::task::ready;
 use std::task::Context;
 use std::task::Poll;
 
-use async_trait::async_trait;
-
 use crate::raw::oio::WriteBuf;
 use crate::raw::*;
 use crate::*;
@@ -55,7 +53,6 @@ impl<W: oio::Write> ExactBufWriter<W> {
     }
 }
 
-#[async_trait]
 impl<W: oio::Write> oio::Write for ExactBufWriter<W> {
     fn poll_write(&mut self, cx: &mut Context<'_>, bs: &dyn WriteBuf) -> Poll<Result<usize>> {
         if self.buffer.len() >= self.buffer_size {
@@ -102,7 +99,6 @@ mod tests {
         buf: Vec<u8>,
     }
 
-    #[async_trait]
     impl Write for MockWriter {
         fn poll_write(&mut self, _: &mut Context<'_>, bs: &dyn WriteBuf) -> Poll<Result<usize>> {
             debug!(

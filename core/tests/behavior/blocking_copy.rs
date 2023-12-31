@@ -16,7 +16,8 @@
 // under the License.
 
 use anyhow::Result;
-use sha2::{Digest, Sha256};
+use sha2::Digest;
+use sha2::Sha256;
 
 use crate::*;
 
@@ -75,6 +76,10 @@ pub fn test_blocking_copy_non_existing_source(op: BlockingOperator) -> Result<()
 
 /// Copy a dir as source should return an error.
 pub fn test_blocking_copy_source_dir(op: BlockingOperator) -> Result<()> {
+    if !op.info().full_capability().create_dir {
+        return Ok(());
+    }
+
     let source_path = format!("{}/", uuid::Uuid::new_v4());
     let target_path = uuid::Uuid::new_v4().to_string();
 
@@ -89,6 +94,10 @@ pub fn test_blocking_copy_source_dir(op: BlockingOperator) -> Result<()> {
 
 /// Copy to a dir should return an error.
 pub fn test_blocking_copy_target_dir(op: BlockingOperator) -> Result<()> {
+    if !op.info().full_capability().create_dir {
+        return Ok(());
+    }
+
     let source_path = uuid::Uuid::new_v4().to_string();
     let (source_content, _) = gen_bytes(op.info().full_capability());
 

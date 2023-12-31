@@ -27,14 +27,13 @@ use reqsign::AzureStorageConfig;
 use reqsign::AzureStorageLoader;
 use reqsign::AzureStorageSigner;
 
-use crate::raw::*;
-use crate::services::azfile::pager::AzfilePager;
-use crate::*;
-
 use super::core::AzfileCore;
 use super::error::parse_error;
 use super::writer::AzfileWriter;
 use super::writer::AzfileWriters;
+use crate::raw::*;
+use crate::services::azfile::lister::AzfileLister;
+use crate::*;
 
 /// Default endpoint of Azure File services.
 const DEFAULT_AZFILE_ENDPOINT_SUFFIX: &str = "file.core.windows.net";
@@ -119,7 +118,7 @@ impl AzfileBuilder {
     /// Set file share name of this backend.
     ///
     /// # Notes
-    /// You can find more about from: https://learn.microsoft.com/en-us/rest/api/storageservices/operations-on-shares--file-service
+    /// You can find more about from: <https://learn.microsoft.com/en-us/rest/api/storageservices/operations-on-shares--file-service>
     pub fn share_name(&mut self, share_name: &str) -> &mut Self {
         if !share_name.is_empty() {
             self.share_name = share_name.to_string();
@@ -251,8 +250,8 @@ impl Accessor for AzfileBackend {
     type BlockingReader = ();
     type Writer = AzfileWriters;
     type BlockingWriter = ();
-    type Pager = AzfilePager;
-    type BlockingPager = ();
+    type Lister = oio::PageLister<AzfileLister>;
+    type BlockingLister = ();
 
     fn info(&self) -> AccessorInfo {
         let mut am = AccessorInfo::default();
@@ -271,7 +270,6 @@ impl Accessor for AzfileBackend {
                 rename: true,
 
                 list: true,
-                list_with_delimiter_slash: true,
 
                 ..Default::default()
             });
@@ -318,9 +316,16 @@ impl Accessor for AzfileBackend {
         match status {
             StatusCode::OK | StatusCode::PARTIAL_CONTENT => {
                 let size = parse_content_length(resp.headers())?;
-                Ok((RpRead::new().with_size(size), resp.into_body()))
+                let range = parse_content_range(resp.headers())?;
+                Ok((
+                    RpRead::new().with_size(size).with_range(range),
+                    resp.into_body(),
+                ))
             }
-            StatusCode::RANGE_NOT_SATISFIABLE => Ok((RpRead::new(), IncomingAsyncBody::empty())),
+            StatusCode::RANGE_NOT_SATISFIABLE => {
+                resp.into_body().consume().await?;
+                Ok((RpRead::new().with_size(Some(0)), IncomingAsyncBody::empty()))
+            }
             _ => Err(parse_error(resp).await?),
         }
     }
@@ -337,31 +342,19 @@ impl Accessor for AzfileBackend {
     }
 
     async fn stat(&self, path: &str, _: OpStat) -> Result<RpStat> {
-        // Stat root always returns a DIR.
-        if path == "/" {
-            return Ok(RpStat::new(Metadata::new(EntryMode::DIR)));
-        }
-
-        if path.ends_with('/') {
-            let resp = self.core.azfile_get_path_properties(path).await?;
-            let status = resp.status();
-            match status {
-                StatusCode::OK => {
-                    let meta = parse_into_metadata(path, resp.headers())?;
-                    Ok(RpStat::new(meta))
-                }
-                _ => Err(parse_error(resp).await?),
-            }
+        let resp = if path.ends_with('/') {
+            self.core.azfile_get_directory_properties(path).await?
         } else {
-            let resp = self.core.azfile_get_file_properties(path).await?;
-            let status = resp.status();
-            match status {
-                StatusCode::OK => {
-                    let meta = parse_into_metadata(path, resp.headers())?;
-                    Ok(RpStat::new(meta))
-                }
-                _ => Err(parse_error(resp).await?),
+            self.core.azfile_get_file_properties(path).await?
+        };
+
+        let status = resp.status();
+        match status {
+            StatusCode::OK => {
+                let meta = parse_into_metadata(path, resp.headers())?;
+                Ok(RpStat::new(meta))
             }
+            _ => Err(parse_error(resp).await?),
         }
     }
 
@@ -395,10 +388,10 @@ impl Accessor for AzfileBackend {
         }
     }
 
-    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Pager)> {
-        let op = AzfilePager::new(self.core.clone(), path.to_string(), args.limit());
+    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Lister)> {
+        let l = AzfileLister::new(self.core.clone(), path.to_string(), args.limit());
 
-        Ok((RpList::default(), op))
+        Ok((RpList::default(), oio::PageLister::new(l)))
     }
 }
 

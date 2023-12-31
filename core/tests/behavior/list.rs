@@ -39,6 +39,7 @@ pub fn behavior_list_tests(op: &Operator) -> Vec<Trial> {
         test_list_dir,
         test_list_dir_with_metakey,
         test_list_dir_with_metakey_complete,
+        test_list_prefix,
         test_list_rich_dir,
         test_list_empty_dir,
         test_list_non_exist_dir,
@@ -46,8 +47,8 @@ pub fn behavior_list_tests(op: &Operator) -> Vec<Trial> {
         test_list_nested_dir,
         test_list_dir_with_file_path,
         test_list_with_start_after,
-        test_scan,
-        test_scan_root,
+        test_list_with_recursive,
+        test_list_root_with_recursive,
         test_remove_all
     )
 }
@@ -175,6 +176,23 @@ pub async fn test_list_dir_with_metakey_complete(op: Operator) -> Result<()> {
     Ok(())
 }
 
+/// List prefix should return newly created file.
+pub async fn test_list_prefix(op: Operator) -> Result<()> {
+    let path = uuid::Uuid::new_v4().to_string();
+    debug!("Generate a random file: {}", &path);
+    let (content, _) = gen_bytes(op.info().full_capability());
+
+    op.write(&path, content).await.expect("write must succeed");
+
+    let obs = op.list(&path[..path.len() - 1]).await?;
+    assert_eq!(obs.len(), 1);
+    assert_eq!(obs[0].path(), path);
+    assert_eq!(obs[0].metadata().mode(), EntryMode::FILE);
+
+    op.delete(&path).await.expect("delete must succeed");
+    Ok(())
+}
+
 /// listing a directory, which contains more objects than a single page can take.
 pub async fn test_list_rich_dir(op: Operator) -> Result<()> {
     op.create_dir("test_list_rich_dir/").await?;
@@ -198,6 +216,23 @@ pub async fn test_list_rich_dir(op: Operator) -> Result<()> {
 
     assert_eq!(actual, expected);
 
+    // List concurrently.
+    let mut objects = op
+        .with_limit(10)
+        .lister_with("test_list_rich_dir/")
+        .concurrent(5)
+        .metakey(Metakey::Complete)
+        .await?;
+    let mut actual = vec![];
+    while let Some(o) = objects.try_next().await? {
+        let path = o.path().to_string();
+        actual.push(path)
+    }
+    expected.sort_unstable();
+    actual.sort_unstable();
+
+    assert_eq!(actual, expected);
+
     op.remove_all("test_list_rich_dir/").await?;
     Ok(())
 }
@@ -208,14 +243,50 @@ pub async fn test_list_empty_dir(op: Operator) -> Result<()> {
 
     op.create_dir(&dir).await.expect("write must succeed");
 
+    // List "dir/" should return empty object.
     let mut obs = op.lister(&dir).await?;
     let mut objects = HashMap::new();
     while let Some(de) = obs.try_next().await? {
         objects.insert(de.path().to_string(), de);
     }
-    debug!("got objects: {:?}", objects);
-
     assert_eq!(objects.len(), 0, "dir should only return empty");
+
+    // List "dir" should return "dir/".
+    let mut obs = op.lister(dir.trim_end_matches('/')).await?;
+    let mut objects = HashMap::new();
+    while let Some(de) = obs.try_next().await? {
+        objects.insert(de.path().to_string(), de);
+    }
+    assert_eq!(objects.len(), 1, "only return the dir itself");
+    assert_eq!(
+        objects[&dir].metadata().mode(),
+        EntryMode::DIR,
+        "given dir should exist and must be dir"
+    );
+
+    // List "dir/" should return empty object.
+    let mut obs = op.lister_with(&dir).recursive(true).await?;
+    let mut objects = HashMap::new();
+    while let Some(de) = obs.try_next().await? {
+        objects.insert(de.path().to_string(), de);
+    }
+    assert_eq!(objects.len(), 0, "dir should only return empty");
+
+    // List "dir" should return "dir/".
+    let mut obs = op
+        .lister_with(dir.trim_end_matches('/'))
+        .recursive(true)
+        .await?;
+    let mut objects = HashMap::new();
+    while let Some(de) = obs.try_next().await? {
+        objects.insert(de.path().to_string(), de);
+    }
+    assert_eq!(objects.len(), 1, "only return the dir itself");
+    assert_eq!(
+        objects[&dir].metadata().mode(),
+        EntryMode::DIR,
+        "given dir should exist and must be dir"
+    );
 
     op.delete(&dir).await.expect("delete must succeed");
     Ok(())
@@ -261,7 +332,8 @@ pub async fn test_list_sub_dir(op: Operator) -> Result<()> {
 
 /// List dir should also to list nested dir.
 pub async fn test_list_nested_dir(op: Operator) -> Result<()> {
-    let dir = format!("{}/{}/", uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+    let parent = format!("{}/", uuid::Uuid::new_v4());
+    let dir = format!("{parent}{}/", uuid::Uuid::new_v4());
 
     let file_name = uuid::Uuid::new_v4().to_string();
     let file_path = format!("{dir}{file_name}");
@@ -273,6 +345,11 @@ pub async fn test_list_nested_dir(op: Operator) -> Result<()> {
         .await
         .expect("creat must succeed");
     op.create_dir(&dir_path).await.expect("creat must succeed");
+
+    let obs = op.list(&parent).await?;
+    assert_eq!(obs.len(), 1, "parent should only got 1 entry");
+    assert_eq!(obs[0].path(), dir);
+    assert_eq!(obs[0].metadata().mode(), EntryMode::DIR);
 
     let mut obs = op.lister(&dir).await?;
     let mut objects = HashMap::new();
@@ -316,10 +393,17 @@ pub async fn test_list_nested_dir(op: Operator) -> Result<()> {
 /// List with path file should auto add / suffix.
 pub async fn test_list_dir_with_file_path(op: Operator) -> Result<()> {
     let parent = uuid::Uuid::new_v4().to_string();
+    let file = format!("{parent}/{}", uuid::Uuid::new_v4());
 
-    let obs = op.lister(&parent).await.map(|_| ());
-    assert!(obs.is_err());
-    assert_eq!(obs.unwrap_err().kind(), ErrorKind::NotADirectory);
+    let (content, _) = gen_bytes(op.info().full_capability());
+    op.write(&file, content).await?;
+
+    let obs = op.list(&parent).await?;
+    assert_eq!(obs.len(), 1);
+    assert_eq!(obs[0].path(), format!("{parent}/"));
+    assert_eq!(obs[0].metadata().mode(), EntryMode::DIR);
+
+    op.delete(&file).await?;
 
     Ok(())
 }
@@ -365,8 +449,8 @@ pub async fn test_list_with_start_after(op: Operator) -> Result<()> {
     Ok(())
 }
 
-pub async fn test_scan_root(op: Operator) -> Result<()> {
-    let w = op.lister_with("").delimiter("").await?;
+pub async fn test_list_root_with_recursive(op: Operator) -> Result<()> {
+    let w = op.lister_with("").recursive(true).await?;
     let actual = w
         .try_collect::<Vec<_>>()
         .await?
@@ -380,7 +464,7 @@ pub async fn test_scan_root(op: Operator) -> Result<()> {
 }
 
 // Walk top down should output as expected
-pub async fn test_scan(op: Operator) -> Result<()> {
+pub async fn test_list_with_recursive(op: Operator) -> Result<()> {
     let parent = uuid::Uuid::new_v4().to_string();
 
     let expected = [
@@ -396,7 +480,7 @@ pub async fn test_scan(op: Operator) -> Result<()> {
 
     let w = op
         .lister_with(&format!("{parent}/x/"))
-        .delimiter("")
+        .recursive(true)
         .await?;
     let actual = w
         .try_collect::<Vec<_>>()

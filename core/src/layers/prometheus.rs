@@ -268,15 +268,16 @@ impl<A: Accessor> Debug for PrometheusAccessor<A> {
     }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl<A: Accessor> LayeredAccessor for PrometheusAccessor<A> {
     type Inner = A;
     type Reader = PrometheusMetricWrapper<A::Reader>;
     type BlockingReader = PrometheusMetricWrapper<A::BlockingReader>;
     type Writer = PrometheusMetricWrapper<A::Writer>;
     type BlockingWriter = PrometheusMetricWrapper<A::BlockingWriter>;
-    type Pager = A::Pager;
-    type BlockingPager = A::BlockingPager;
+    type Lister = A::Lister;
+    type BlockingLister = A::BlockingLister;
 
     fn inner(&self) -> &Self::Inner {
         &self.inner
@@ -429,7 +430,7 @@ impl<A: Accessor> LayeredAccessor for PrometheusAccessor<A> {
         })
     }
 
-    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Pager)> {
+    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Lister)> {
         let labels = self.stats.generate_metric_label(
             self.scheme.into_static(),
             Operation::List.into_static(),
@@ -633,7 +634,7 @@ impl<A: Accessor> LayeredAccessor for PrometheusAccessor<A> {
         })
     }
 
-    fn blocking_list(&self, path: &str, args: OpList) -> Result<(RpList, Self::BlockingPager)> {
+    fn blocking_list(&self, path: &str, args: OpList) -> Result<(RpList, Self::BlockingLister)> {
         let labels = self.stats.generate_metric_label(
             self.scheme.into_static(),
             Operation::BlockingList.into_static(),
@@ -790,7 +791,6 @@ impl<R: oio::BlockingRead> oio::BlockingRead for PrometheusMetricWrapper<R> {
     }
 }
 
-#[async_trait]
 impl<R: oio::Write> oio::Write for PrometheusMetricWrapper<R> {
     fn poll_write(&mut self, cx: &mut Context<'_>, bs: &dyn oio::WriteBuf) -> Poll<Result<usize>> {
         let labels = self.stats.generate_metric_label(

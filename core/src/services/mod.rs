@@ -23,6 +23,8 @@
 mod azblob;
 #[cfg(feature = "services-azblob")]
 pub use azblob::Azblob;
+#[cfg(feature = "services-azblob")]
+pub use azblob::AzblobConfig;
 
 #[cfg(feature = "services-azdls")]
 mod azdls;
@@ -67,6 +69,8 @@ pub use ftp::FtpConfig;
 mod gcs;
 #[cfg(feature = "services-gcs")]
 pub use gcs::Gcs;
+#[cfg(feature = "services-gcs")]
+pub use gcs::GcsConfig;
 
 #[cfg(feature = "services-ghac")]
 mod ghac;
@@ -82,6 +86,8 @@ pub use gridfs::Gridfs;
 mod hdfs;
 #[cfg(feature = "services-hdfs")]
 pub use hdfs::Hdfs;
+#[cfg(feature = "services-hdfs")]
+pub use hdfs::HdfsConfig;
 
 #[cfg(feature = "services-http")]
 mod http;
@@ -89,6 +95,13 @@ mod http;
 pub use self::http::Http;
 #[cfg(feature = "services-http")]
 pub use self::http::HttpConfig;
+
+#[cfg(feature = "services-huggingface")]
+mod huggingface;
+#[cfg(feature = "services-huggingface")]
+pub use huggingface::Huggingface;
+#[cfg(feature = "services-huggingface")]
+pub use huggingface::HuggingfaceConfig;
 
 #[cfg(feature = "services-ipfs")]
 mod ipfs;
@@ -111,6 +124,8 @@ pub use libsql::LibsqlConfig;
 mod memcached;
 #[cfg(feature = "services-memcached")]
 pub use memcached::Memcached;
+#[cfg(feature = "services-memcached")]
+pub use memcached::MemcachedConfig;
 
 #[cfg(feature = "services-memory")]
 mod memory;
@@ -126,6 +141,8 @@ pub use self::mini_moka::MiniMoka;
 mod moka;
 #[cfg(feature = "services-moka")]
 pub use self::moka::Moka;
+#[cfg(feature = "services-moka")]
+pub use self::moka::MokaConfig;
 
 #[cfg(feature = "services-obs")]
 mod obs;
@@ -150,14 +167,16 @@ pub use self::persy::Persy;
 #[cfg(feature = "services-redis")]
 mod redis;
 #[cfg(feature = "services-redis")]
-pub use redis::Redis;
+pub use self::redis::Redis;
 #[cfg(feature = "services-redis")]
-pub use redis::RedisConfig;
+pub use self::redis::RedisConfig;
 
 #[cfg(feature = "services-rocksdb")]
 mod rocksdb;
 #[cfg(feature = "services-rocksdb")]
 pub use self::rocksdb::Rocksdb;
+#[cfg(feature = "services-rocksdb")]
+pub use self::rocksdb::RocksdbConfig;
 
 #[cfg(feature = "services-s3")]
 mod s3;
@@ -187,6 +206,8 @@ pub use supabase::Supabase;
 mod webdav;
 #[cfg(feature = "services-webdav")]
 pub use webdav::Webdav;
+#[cfg(feature = "services-webdav")]
+pub use webdav::WebdavConfig;
 
 #[cfg(feature = "services-webhdfs")]
 mod webhdfs;
@@ -241,6 +262,8 @@ pub use self::postgresql::PostgresqlConfig;
 mod atomicserver;
 #[cfg(feature = "services-atomicserver")]
 pub use self::atomicserver::Atomicserver;
+#[cfg(feature = "services-atomicserver")]
+pub use self::atomicserver::AtomicserverConfig;
 
 #[cfg(feature = "services-mysql")]
 mod mysql;
@@ -280,3 +303,38 @@ pub use self::dbfs::Dbfs;
 mod swift;
 #[cfg(feature = "services-swift")]
 pub use self::swift::Swift;
+
+#[cfg(feature = "services-alluxio")]
+mod alluxio;
+#[cfg(feature = "services-alluxio")]
+pub use alluxio::Alluxio;
+#[cfg(feature = "services-alluxio")]
+pub use alluxio::AlluxioConfig;
+
+#[cfg(feature = "services-b2")]
+mod b2;
+#[cfg(feature = "services-b2")]
+pub use b2::B2Config;
+#[cfg(feature = "services-b2")]
+pub use b2::B2;
+
+#[cfg(feature = "services-seafile")]
+mod seafile;
+#[cfg(feature = "services-seafile")]
+pub use seafile::Seafile;
+#[cfg(feature = "services-seafile")]
+pub use seafile::SeafileConfig;
+
+#[cfg(feature = "services-upyun")]
+mod upyun;
+#[cfg(feature = "services-upyun")]
+pub use upyun::Upyun;
+#[cfg(feature = "services-upyun")]
+pub use upyun::UpyunConfig;
+
+#[cfg(feature = "services-chainsafe")]
+mod chainsafe;
+#[cfg(feature = "services-chainsafe")]
+pub use chainsafe::Chainsafe;
+#[cfg(feature = "services-chainsafe")]
+pub use chainsafe::ChainsafeConfig;

@@ -15,15 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::raw::*;
-use crate::*;
-use bytes::Bytes;
-use futures::future::BoxFuture;
-use futures::Future;
 use std::io::SeekFrom;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{ready, Context, Poll};
+use std::task::ready;
+use std::task::Context;
+use std::task::Poll;
+
+use bytes::Bytes;
+use futures::Future;
+
+use crate::raw::*;
+use crate::*;
 
 /// LazyReader implements [`oio::Read`] in a lazy way.
 ///
@@ -37,10 +40,14 @@ pub struct LazyReader<A: Accessor, R> {
 
 enum State<R> {
     Idle,
-    Send(BoxFuture<'static, Result<(RpRead, R)>>),
+    Send(BoxedFuture<Result<(RpRead, R)>>),
     Read(R),
 }
 
+/// # Safety
+///
+/// wasm32 is a special target that we only have one event-loop for this state.
+unsafe impl<R> Send for State<R> {}
 /// Safety: State will only be accessed under &mut.
 unsafe impl<R> Sync for State<R> {}
 
@@ -65,7 +72,7 @@ where
     A: Accessor<Reader = R>,
     R: oio::Read,
 {
-    fn read_future(&self) -> BoxFuture<'static, Result<(RpRead, R)>> {
+    fn read_future(&self) -> BoxedFuture<Result<(RpRead, R)>> {
         let acc = self.acc.clone();
         let path = self.path.clone();
         let op = self.op.clone();

@@ -1,4 +1,4 @@
-# OpenDAL Ruby Binding (WIP)
+# Apache OpenDAL™ Ruby Binding (WIP)
 
 ![](https://img.shields.io/badge/status-unreleased-red)
 
@@ -20,8 +20,8 @@ Build bindings:
 rake compile
 ```
 
-Run some tests:
+Run tests:
 
 ```shell
-rake test
+rake spec
 ```

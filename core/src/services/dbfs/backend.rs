@@ -25,14 +25,13 @@ use http::StatusCode;
 use log::debug;
 use serde::Deserialize;
 
-use crate::raw::*;
-use crate::*;
-
 use super::core::DbfsCore;
 use super::error::parse_error;
-use super::pager::DbfsPager;
+use super::lister::DbfsLister;
 use super::reader::DbfsReader;
 use super::writer::DbfsWriter;
+use crate::raw::*;
+use crate::*;
 
 /// [Dbfs](https://docs.databricks.com/api/azure/workspace/dbfs)'s REST API support.
 #[doc = include_str!("docs.md")]
@@ -158,8 +157,8 @@ impl Accessor for DbfsBackend {
     type BlockingReader = ();
     type Writer = oio::OneShotWriter<DbfsWriter>;
     type BlockingWriter = ();
-    type Pager = DbfsPager;
-    type BlockingPager = ();
+    type Lister = oio::PageLister<DbfsLister>;
+    type BlockingLister = ();
 
     fn info(&self) -> AccessorInfo {
         let mut am = AccessorInfo::default();
@@ -178,7 +177,6 @@ impl Accessor for DbfsBackend {
                 rename: true,
 
                 list: true,
-                list_with_delimiter_slash: true,
 
                 ..Default::default()
             });
@@ -275,10 +273,10 @@ impl Accessor for DbfsBackend {
         }
     }
 
-    async fn list(&self, path: &str, _args: OpList) -> Result<(RpList, Self::Pager)> {
-        let op = DbfsPager::new(self.core.clone(), path.to_string());
+    async fn list(&self, path: &str, _args: OpList) -> Result<(RpList, Self::Lister)> {
+        let l = DbfsLister::new(self.core.clone(), path.to_string());
 
-        Ok((RpList::default(), op))
+        Ok((RpList::default(), oio::PageLister::new(l)))
     }
 }
 

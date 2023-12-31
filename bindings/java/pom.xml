@@ -32,7 +32,13 @@
 
     <groupId>org.apache.opendal</groupId>
     <artifactId>opendal-java</artifactId>
-    <version>0.42.0</version>
+    <version>0.44.1</version>
+
+    <name>Apache OpenDAL</name>
+    <description>
+        OpenDAL is a data access layer that allows users to
+        easily and efficiently retrieve data from various storage services in a unified way.
+    </description>
 
     <url>https://opendal.apache.org</url>
     <mailingLists>
@@ -55,6 +61,7 @@
         <!-- customized properties -->
         <cargo-build.profile>dev</cargo-build.profile>
         <cargo-build.features>default</cargo-build.features>
+        <cargo-build.enableZigbuild>false</cargo-build.enableZigbuild>
         <cargo-build.target/> <!-- override cargo build target; e.g., use musl instead -->
         <jni.classifier>${os.detected.classifier}</jni.classifier>
 
@@ -196,6 +203,8 @@
                                 <argument>${cargo-build.profile}</argument>
                                 <argument>--features</argument>
                                 <argument>${cargo-build.features}</argument>
+                                <argument>--enable-zigbuild</argument>
+                                <argument>${cargo-build.enableZigbuild}</argument>
                             </arguments>
                         </configuration>
                     </execution>

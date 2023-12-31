@@ -27,7 +27,7 @@ use http::StatusCode;
 use serde::Deserialize;
 
 use super::error::parse_error;
-use super::pager::IpmfsPager;
+use super::lister::IpmfsLister;
 use super::writer::IpmfsWriter;
 use crate::raw::*;
 use crate::*;
@@ -66,8 +66,8 @@ impl Accessor for IpmfsBackend {
     type BlockingReader = ();
     type Writer = oio::OneShotWriter<IpmfsWriter>;
     type BlockingWriter = ();
-    type Pager = IpmfsPager;
-    type BlockingPager = ();
+    type Lister = oio::PageLister<IpmfsLister>;
+    type BlockingLister = ();
 
     fn info(&self) -> AccessorInfo {
         let mut am = AccessorInfo::default();
@@ -84,7 +84,6 @@ impl Accessor for IpmfsBackend {
                 delete: true,
 
                 list: true,
-                list_with_delimiter_slash: true,
 
                 ..Default::default()
             });
@@ -170,11 +169,9 @@ impl Accessor for IpmfsBackend {
         }
     }
 
-    async fn list(&self, path: &str, _: OpList) -> Result<(RpList, Self::Pager)> {
-        Ok((
-            RpList::default(),
-            IpmfsPager::new(Arc::new(self.clone()), &self.root, path),
-        ))
+    async fn list(&self, path: &str, _: OpList) -> Result<(RpList, Self::Lister)> {
+        let l = IpmfsLister::new(Arc::new(self.clone()), &self.root, path);
+        Ok((RpList::default(), oio::PageLister::new(l)))
     }
 }
 

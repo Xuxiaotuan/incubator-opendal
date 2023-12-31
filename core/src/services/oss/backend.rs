@@ -32,7 +32,7 @@ use reqsign::AliyunOssSigner;
 
 use super::core::*;
 use super::error::parse_error;
-use super::pager::OssPager;
+use super::lister::OssLister;
 use super::writer::OssWriter;
 use crate::raw::*;
 use crate::services::oss::writer::OssWriters;
@@ -380,8 +380,8 @@ impl Accessor for OssBackend {
     type BlockingReader = ();
     type Writer = OssWriters;
     type BlockingWriter = ();
-    type Pager = OssPager;
-    type BlockingPager = ();
+    type Lister = oio::PageLister<OssLister>;
+    type BlockingLister = ();
 
     fn info(&self) -> AccessorInfo {
         let mut am = AccessorInfo::default();
@@ -420,14 +420,12 @@ impl Accessor for OssBackend {
                 },
 
                 delete: true,
-                create_dir: true,
                 copy: true,
 
                 list: true,
                 list_with_limit: true,
                 list_with_start_after: true,
-                list_with_delimiter_slash: true,
-                list_without_delimiter: true,
+                list_with_recursive: true,
 
                 presign: true,
                 presign_stat: true,
@@ -441,22 +439,6 @@ impl Accessor for OssBackend {
             });
 
         am
-    }
-
-    async fn create_dir(&self, path: &str, _: OpCreateDir) -> Result<RpCreateDir> {
-        let resp = self
-            .core
-            .oss_put_object(path, None, &OpWrite::default(), AsyncBody::Empty)
-            .await?;
-        let status = resp.status();
-
-        match status {
-            StatusCode::CREATED | StatusCode::OK => {
-                resp.into_body().consume().await?;
-                Ok(RpCreateDir::default())
-            }
-            _ => Err(parse_error(resp).await?),
-        }
     }
 
     async fn read(&self, path: &str, args: OpRead) -> Result<(RpRead, Self::Reader)> {
@@ -476,9 +458,16 @@ impl Accessor for OssBackend {
         match status {
             StatusCode::OK | StatusCode::PARTIAL_CONTENT => {
                 let size = parse_content_length(resp.headers())?;
-                Ok((RpRead::new().with_size(size), resp.into_body()))
+                let range = parse_content_range(resp.headers())?;
+                Ok((
+                    RpRead::new().with_size(size).with_range(range),
+                    resp.into_body(),
+                ))
             }
-            StatusCode::RANGE_NOT_SATISFIABLE => Ok((RpRead::new(), IncomingAsyncBody::empty())),
+            StatusCode::RANGE_NOT_SATISFIABLE => {
+                resp.into_body().consume().await?;
+                Ok((RpRead::new().with_size(Some(0)), IncomingAsyncBody::empty()))
+            }
             _ => Err(parse_error(resp).await?),
         }
     }
@@ -509,11 +498,6 @@ impl Accessor for OssBackend {
     }
 
     async fn stat(&self, path: &str, args: OpStat) -> Result<RpStat> {
-        if path == "/" {
-            let m = Metadata::new(EntryMode::DIR);
-            return Ok(RpStat::new(m));
-        }
-
         let resp = self
             .core
             .oss_head_object(path, args.if_match(), args.if_none_match())
@@ -523,11 +507,6 @@ impl Accessor for OssBackend {
 
         match status {
             StatusCode::OK => parse_into_metadata(path, resp.headers()).map(RpStat::new),
-            StatusCode::NOT_FOUND if path.ends_with('/') => {
-                let m = Metadata::new(EntryMode::DIR);
-                Ok(RpStat::new(m))
-            }
-
             _ => Err(parse_error(resp).await?),
         }
     }
@@ -544,17 +523,15 @@ impl Accessor for OssBackend {
         }
     }
 
-    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Pager)> {
-        Ok((
-            RpList::default(),
-            OssPager::new(
-                self.core.clone(),
-                path,
-                args.delimiter(),
-                args.limit(),
-                args.start_after(),
-            ),
-        ))
+    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Lister)> {
+        let l = OssLister::new(
+            self.core.clone(),
+            path,
+            args.recursive(),
+            args.limit(),
+            args.start_after(),
+        );
+        Ok((RpList::default(), oio::PageLister::new(l)))
     }
 
     async fn presign(&self, path: &str, args: OpPresign) -> Result<RpPresign> {

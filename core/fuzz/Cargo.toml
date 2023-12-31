@@ -21,6 +21,8 @@ name = "opendal-fuzz"
 publish = false
 version = "0.0.0"
 
+license.workspace = true
+
 [package.metadata]
 cargo-fuzz = true
 
@@ -37,6 +39,10 @@ tracing-subscriber = { version = "0.3", features = [
   "tracing-log",
 ] }
 uuid = { version = "1", features = ["v4"] }
+
+[[bin]]
+name = "fuzz_reader_with_buffer"
+path = "fuzz_reader_with_buffer.rs"
 
 [[bin]]
 name = "fuzz_reader"

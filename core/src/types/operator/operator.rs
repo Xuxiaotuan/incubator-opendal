@@ -26,7 +26,8 @@ use futures::TryStreamExt;
 
 use super::BlockingOperator;
 use crate::operator_futures::*;
-use crate::raw::oio::{ReadExt, WriteExt};
+use crate::raw::oio::ReadExt;
+use crate::raw::oio::WriteExt;
 use crate::raw::*;
 use crate::*;
 
@@ -157,15 +158,43 @@ impl Operator {
         }
     }
 
-    /// Get current path's metadata.
+    /// Get given path's metadata.
     ///
     /// # Notes
     ///
     /// For fetch metadata of entries returned by [`Lister`], it's better to use [`list_with`] and
     /// [`lister_with`] with `metakey` query like `Metakey::ContentLength | Metakey::LastModified`
-    /// so that we can avoid extra requests.
+    /// so that we can avoid extra stat requests.
+    ///
+    /// # Behavior
+    ///
+    /// ## Services that support `create_dir`
+    ///
+    /// `test` and `test/` may vary in some services such as S3. However, on a local file system,
+    /// they're identical. Therefore, the behavior of `stat("test")` and `stat("test/")` might differ
+    /// in certain edge cases. Always use `stat("test/")` when you need to access a directory if possible.
+    ///
+    /// Here are the behavior list:
+    ///
+    /// | Case                   | Path            | Result                                     |
+    /// |------------------------|-----------------|--------------------------------------------|
+    /// | stat existing dir      | `abc/`          | Metadata with dir mode                     |
+    /// | stat existing file     | `abc/def_file`  | Metadata with file mode                    |
+    /// | stat dir without `/`   | `abc/def_dir`   | Error `NotFound` or metadata with dir mode |
+    /// | stat file with `/`     | `abc/def_file/` | Error `NotFound`                           |
+    /// | stat not existing path | `xyz`           | Error `NotFound`                           |
+    ///
+    /// Refer to [RFC: List Prefix][crate::docs::rfcs::rfc_3243_list_prefix] for more details.
+    ///
+    /// ## Services that not support `create_dir`
+    ///
+    /// For services that not support `create_dir`, `stat("test/")` will return `NotFound` even
+    /// when `test/abc` exists since the service won't have the concept of dir. There is nothing
+    /// we can do about this.
     ///
     /// # Examples
+    ///
+    /// ## Check if file exists
     ///
     /// ```
     /// # use anyhow::Result;
@@ -187,20 +216,50 @@ impl Operator {
         self.stat_with(path).await
     }
 
-    /// Get current path's metadata **without cache** directly with extra options.
+    /// Get given path's metadata with extra options.
     ///
     /// # Notes
     ///
-    /// Use `stat` if you:
+    /// For fetch metadata of entries returned by [`Lister`], it's better to use [`list_with`] and
+    /// [`lister_with`] with `metakey` query like `Metakey::ContentLength | Metakey::LastModified`
+    /// so that we can avoid extra requests.
     ///
-    /// - Want to detect the outside changes of path.
-    /// - Don't want to read from cached metadata.
+    /// # Behavior
     ///
-    /// You may want to use `metadata` if you are working with entries
-    /// returned by [`Lister`]. It's highly possible that metadata
-    /// you want has already been cached.
+    /// ## Services that support `create_dir`
+    ///
+    /// `test` and `test/` may vary in some services such as S3. However, on a local file system,
+    /// they're identical. Therefore, the behavior of `stat("test")` and `stat("test/")` might differ
+    /// in certain edge cases. Always use `stat("test/")` when you need to access a directory if possible.
+    ///
+    /// Here are the behavior list:
+    ///
+    /// | Case                   | Path            | Result                                     |
+    /// |------------------------|-----------------|--------------------------------------------|
+    /// | stat existing dir      | `abc/`          | Metadata with dir mode                     |
+    /// | stat existing file     | `abc/def_file`  | Metadata with file mode                    |
+    /// | stat dir without `/`   | `abc/def_dir`   | Error `NotFound` or metadata with dir mode |
+    /// | stat file with `/`     | `abc/def_file/` | Error `NotFound`                           |
+    /// | stat not existing path | `xyz`           | Error `NotFound`                           |
+    ///
+    /// Refer to [RFC: List Prefix][crate::docs::rfcs::rfc_3243_list_prefix] for more details.
+    ///
+    /// ## Services that not support `create_dir`
+    ///
+    /// For services that not support `create_dir`, `stat("test/")` will return `NotFound` even
+    /// when `test/abc` exists since the service won't have the concept of dir. There is nothing
+    /// we can do about this.
     ///
     /// # Examples
+    ///
+    /// ## Get metadata while `ETag` matches
+    ///
+    /// `stat_with` will
+    ///
+    /// - return `Ok(metadata)` if `ETag` matches
+    /// - return `Err(error)` and `error.kind() == ErrorKind::ConditionNotMatch` if file exists but
+    ///   `ETag` mismatch
+    /// - return `Err(err)` if other errors occur, for example, `NotFound`.
     ///
     /// ```
     /// # use anyhow::Result;
@@ -211,6 +270,9 @@ impl Operator {
     /// # #[tokio::main]
     /// # async fn test(op: Operator) -> Result<()> {
     /// if let Err(e) = op.stat_with("test").if_match("<etag>").await {
+    ///     if e.kind() == ErrorKind::ConditionNotMatch {
+    ///         println!("file exists, but etag mismatch")
+    ///     }
     ///     if e.kind() == ErrorKind::NotFound {
     ///         println!("file not exist")
     ///     }
@@ -366,8 +428,21 @@ impl Operator {
                         .with_context("path", &path));
                     }
 
-                    let (_, mut s) = inner.read(&path, args).await?;
-                    let mut buf = Vec::new();
+                    let range = args.range();
+                    let (size_hint, range) = if let Some(size) = range.size() {
+                        (size, range)
+                    } else {
+                        let size = inner
+                            .stat(&path, OpStat::default())
+                            .await?
+                            .into_metadata()
+                            .content_length();
+                        let range = range.complete(size);
+                        (range.size().unwrap(), range)
+                    };
+
+                    let (_, mut s) = inner.read(&path, args.with_range(range)).await?;
+                    let mut buf = Vec::with_capacity(size_hint as usize);
                     s.read_to_end(&mut buf).await?;
 
                     Ok(buf)
@@ -835,6 +910,8 @@ impl Operator {
     /// # }
     /// ```
     pub async fn remove_via(&self, input: impl Stream<Item = String> + Unpin) -> Result<()> {
+        let input = input.map(|v| normalize_path(&v));
+
         if self.info().full_capability().batch {
             let mut input = input
                 .map(|v| (v, OpDelete::default().into()))
@@ -901,7 +978,7 @@ impl Operator {
             return self.delete(path).await;
         }
 
-        let obs = self.lister_with(path).delimiter("").await?;
+        let obs = self.lister_with(path).recursive(true).await?;
 
         if self.info().full_capability().batch {
             let mut obs = obs.try_chunks(self.limit());
@@ -935,17 +1012,17 @@ impl Operator {
         Ok(())
     }
 
-    /// List entries within a given directory.
+    /// List entries that starts with given `path` in parent dir.
     ///
     /// # Notes
     ///
-    /// ## Listing recursively
+    /// ## Recursively list
     ///
     /// This function only read the children of the given directory. To read
-    /// all entries recursively, use `Operator::list_with("path").delimiter("")`
+    /// all entries recursively, use `Operator::list_with("path").recursive(true)`
     /// instead.
     ///
-    /// ## Streaming
+    /// ## Streaming list
     ///
     /// This function will read all entries in the given directory. It could
     /// take very long time and consume a lot of memory if the directory
@@ -954,12 +1031,16 @@ impl Operator {
     /// In order to avoid this, you can use [`Operator::lister`] to list entries in
     /// a streaming way.
     ///
-    /// ## Metadata
+    /// ## Reuse Metadata
     ///
     /// The only metadata that is guaranteed to be available is the `Mode`.
     /// For fetching more metadata, please use [`Operator::list_with`] and `metakey`.
     ///
     /// # Examples
+    ///
+    /// ## List entries under a dir
+    ///
+    /// This example will list all entries under the dir `path/to/dir/`.
     ///
     /// ```no_run
     /// # use anyhow::Result;
@@ -983,33 +1064,14 @@ impl Operator {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn list(&self, path: &str) -> Result<Vec<Entry>> {
-        self.list_with(path).await
-    }
-
-    /// List entries within a given directory with options.
-    ///
-    /// # Notes
-    ///
-    /// ## For streaming
-    ///
-    /// This function will read all entries in the given directory. It could
-    /// take very long time and consume a lot of memory if the directory
-    /// contains a lot of entries.
-    ///
-    /// In order to avoid this, you can use [`Operator::lister`] to list entries in
-    /// a streaming way.
-    ///
-    /// ## Metadata
-    ///
-    /// The only metadata that is guaranteed to be available is the `Mode`.
-    /// For fetching more metadata, please specify the `metakey`.
-    ///
-    /// # Examples
     ///
     /// ## List entries with prefix
     ///
-    /// This function can also be used to list entries in recursive way.
+    /// This example will list all entries under the prefix `path/to/prefix`.
+    ///
+    /// NOTE: it's possible that the prefix itself is also a dir. In this case, you could get
+    /// `path/to/prefix/`, `path/to/prefix_1` and so on. If you do want to list a dir, please
+    /// make sure the path is end with `/`.
     ///
     /// ```no_run
     /// # use anyhow::Result;
@@ -1018,14 +1080,14 @@ impl Operator {
     /// use opendal::Operator;
     /// # #[tokio::main]
     /// # async fn test(op: Operator) -> Result<()> {
-    /// let mut entries = op.list_with("prefix/").delimiter("").await?;
+    /// let mut entries = op.list("path/to/prefix").await?;
     /// for entry in entries {
     ///     match entry.metadata().mode() {
     ///         EntryMode::FILE => {
     ///             println!("Handling file")
     ///         }
     ///         EntryMode::DIR => {
-    ///             println!("Handling dir like start a new list via meta.path()")
+    ///             println!("Handling dir {}", entry.path())
     ///         }
     ///         EntryMode::Unknown => continue,
     ///     }
@@ -1033,8 +1095,76 @@ impl Operator {
     /// # Ok(())
     /// # }
     /// ```
+    pub async fn list(&self, path: &str) -> Result<Vec<Entry>> {
+        self.list_with(path).await
+    }
+
+    /// List entries that starts with given `path` in parent dir with more options.
     ///
-    /// ## List entries with metakey for more metadata
+    /// # Notes
+    ///
+    /// ## Streaming list
+    ///
+    /// This function will read all entries in the given directory. It could
+    /// take very long time and consume a lot of memory if the directory
+    /// contains a lot of entries.
+    ///
+    /// In order to avoid this, you can use [`Operator::lister`] to list entries in
+    /// a streaming way.
+    ///
+    /// # Options
+    ///
+    /// ## `start_after`
+    ///
+    /// Specify the specified key to start listing from.
+    ///
+    /// This feature can be used to resume a listing from a previous point.
+    ///
+    /// The following example will resume the list operation from the `breakpoint`.
+    ///
+    /// ```no_run
+    /// # use opendal::Result;
+    /// use opendal::Operator;
+    /// # #[tokio::main]
+    /// # async fn test(op: Operator) -> Result<()> {
+    /// let mut entries = op
+    ///     .list_with("path/to/dir/")
+    ///     .start_after("breakpoint")
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// ## `recursive`
+    ///
+    /// Specify whether to list recursively or not.
+    ///
+    /// If `recursive` is set to `true`, we will list all entries recursively. If not, we'll only
+    /// list the entries in the specified dir.
+    ///
+    /// ```no_run
+    /// # use opendal::Result;
+    /// use opendal::Operator;
+    /// # #[tokio::main]
+    /// # async fn test(op: Operator) -> Result<()> {
+    /// let mut entries = op.list_with("path/to/dir/").recursive(true).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// ## `metakey`
+    ///
+    /// Specify the metadata that required to be fetched in entries.
+    ///
+    /// If `metakey` is not set, we will fetch only the entry's `mode`. Otherwise, we will retrieve
+    /// the required metadata from storage services. Even if `metakey` is specified, the metadata
+    /// may still be `None`, indicating that the storage service does not supply this information.
+    ///
+    /// Some storage services like `s3` could return more metadata like `content-length` and
+    /// `last-modified`. By using `metakey`, we can fetch those metadata without an extra `stat` call.
+    /// Please pick up the metadata you need to reduce the extra `stat` cost.
+    ///
+    /// This example shows how to list entries with `content-length` and `last-modified` metadata:
     ///
     /// ```no_run
     /// # use anyhow::Result;
@@ -1045,6 +1175,7 @@ impl Operator {
     /// # async fn test(op: Operator) -> Result<()> {
     /// let mut entries = op
     ///     .list_with("dir/")
+    ///     // Make sure content-length and last-modified been fetched.
     ///     .metakey(Metakey::ContentLength | Metakey::LastModified)
     ///     .await?;
     /// for entry in entries {
@@ -1066,6 +1197,62 @@ impl Operator {
     /// # Ok(())
     /// # }
     /// ```
+    ///
+    /// # Examples
+    ///
+    /// ## List all entries recursively
+    ///
+    /// This example will list all entries under the dir `path/to/dir/`
+    ///
+    /// ```no_run
+    /// # use anyhow::Result;
+    /// use opendal::EntryMode;
+    /// use opendal::Metakey;
+    /// use opendal::Operator;
+    /// # #[tokio::main]
+    /// # async fn test(op: Operator) -> Result<()> {
+    /// let mut entries = op.list_with("path/to/dir/").recursive(true).await?;
+    /// for entry in entries {
+    ///     match entry.metadata().mode() {
+    ///         EntryMode::FILE => {
+    ///             println!("Handling file")
+    ///         }
+    ///         EntryMode::DIR => {
+    ///             println!("Handling dir like start a new list via meta.path()")
+    ///         }
+    ///         EntryMode::Unknown => continue,
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// ## List all entries start with prefix
+    ///
+    /// This example will list all entries starts with prefix `path/to/prefix`
+    ///
+    /// ```no_run
+    /// # use anyhow::Result;
+    /// use opendal::EntryMode;
+    /// use opendal::Metakey;
+    /// use opendal::Operator;
+    /// # #[tokio::main]
+    /// # async fn test(op: Operator) -> Result<()> {
+    /// let mut entries = op.list_with("path/to/prefix").recursive(true).await?;
+    /// for entry in entries {
+    ///     match entry.metadata().mode() {
+    ///         EntryMode::FILE => {
+    ///             println!("Handling file")
+    ///         }
+    ///         EntryMode::DIR => {
+    ///             println!("Handling dir like start a new list via meta.path()")
+    ///         }
+    ///         EntryMode::Unknown => continue,
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn list_with(&self, path: &str) -> FutureList {
         let path = normalize_path(path);
 
@@ -1075,16 +1262,6 @@ impl Operator {
             OpList::default(),
             |inner, path, args| {
                 let fut = async move {
-                    if !validate_path(&path, EntryMode::DIR) {
-                        return Err(Error::new(
-                            ErrorKind::NotADirectory,
-                            "the path trying to list should end with `/`",
-                        )
-                        .with_operation("Operator::list")
-                        .with_context("service", inner.info().scheme().into_static())
-                        .with_context("path", &path));
-                    }
-
                     let lister = Lister::create(inner, &path, args).await?;
 
                     lister.try_collect().await
@@ -1095,21 +1272,20 @@ impl Operator {
         fut
     }
 
-    /// List entries within a given directory as a stream.
+    /// List entries that starts with given `path` in parent dir.
     ///
-    /// This function will create a new handle to list entries.
-    ///
-    /// An error will be returned if given path doesn't end with `/`.
+    /// This function will create a new [`Lister`] to list entries. Users can stop listing via
+    /// dropping this [`Lister`].
     ///
     /// # Notes
     ///
-    /// ## Listing recursively
+    /// ## Recursively list
     ///
     /// This function only read the children of the given directory. To read
-    /// all entries recursively, use [`Operator::lister_with`] and `delimiter("")`
+    /// all entries recursively, use [`Operator::lister_with`] and `recursive(true)`
     /// instead.
     ///
-    /// ## Metadata
+    /// ## Reuse Metadata
     ///
     /// The only metadata that is guaranteed to be available is the `Mode`.
     /// For fetching more metadata, please use [`Operator::lister_with`] and `metakey`.
@@ -1144,34 +1320,87 @@ impl Operator {
         self.lister_with(path).await
     }
 
-    /// List entries within a given directory as a stream with options.
+    /// List entries that starts with given `path` in parent dir with options.
     ///
-    /// This function will create a new handle to list entries.
+    /// This function will create a new [`Lister`] to list entries. Users can stop listing via
+    /// dropping this [`Lister`].
     ///
-    /// An error will be returned if given path doesn't end with `/`.
+    /// # Options
     ///
-    /// # Examples
+    /// ## `start_after`
     ///
-    /// ## List current dir
+    /// Specify the specified key to start listing from.
+    ///
+    /// This feature can be used to resume a listing from a previous point.
+    ///
+    /// The following example will resume the list operation from the `breakpoint`.
+    ///
+    /// ```no_run
+    /// # use opendal::Result;
+    /// use opendal::Operator;
+    /// # #[tokio::main]
+    /// # async fn test(op: Operator) -> Result<()> {
+    /// let mut lister = op
+    ///     .lister_with("path/to/dir/")
+    ///     .start_after("breakpoint")
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// ## `recursive`
+    ///
+    /// Specify whether to list recursively or not.
+    ///
+    /// If `recursive` is set to `true`, we will list all entries recursively. If not, we'll only
+    /// list the entries in the specified dir.
+    ///
+    /// ```no_run
+    /// # use opendal::Result;
+    /// use opendal::Operator;
+    /// # #[tokio::main]
+    /// # async fn test(op: Operator) -> Result<()> {
+    /// let mut lister = op.lister_with("path/to/dir/").recursive(true).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// ## `metakey`
+    ///
+    /// Specify the metadata that required to be fetched in entries.
+    ///
+    /// If `metakey` is not set, we will fetch only the entry's `mode`. Otherwise, we will retrieve
+    /// the required metadata from storage services. Even if `metakey` is specified, the metadata
+    /// may still be `None`, indicating that the storage service does not supply this information.
+    ///
+    /// Some storage services like `s3` could return more metadata like `content-length` and
+    /// `last-modified`. By using `metakey`, we can fetch those metadata without an extra `stat` call.
+    /// Please pick up the metadata you need to reduce the extra `stat` cost.
+    ///
+    /// This example shows how to list entries with `content-length` and `last-modified` metadata:
     ///
     /// ```no_run
     /// # use anyhow::Result;
-    /// # use futures::io;
     /// use futures::TryStreamExt;
     /// use opendal::EntryMode;
     /// use opendal::Metakey;
     /// use opendal::Operator;
     /// # #[tokio::main]
     /// # async fn test(op: Operator) -> Result<()> {
-    /// let mut ds = op
-    ///     .lister_with("path/to/dir/")
-    ///     .limit(10)
-    ///     .start_after("start")
+    /// let mut lister = op
+    ///     .lister_with("dir/")
+    ///     // Make sure content-length and last-modified been fetched.
+    ///     .metakey(Metakey::ContentLength | Metakey::LastModified)
     ///     .await?;
-    /// while let Some(mut entry) = ds.try_next().await? {
-    ///     match entry.metadata().mode() {
+    /// while let Some(mut entry) = lister.try_next().await? {
+    ///     let meta = entry.metadata();
+    ///     match meta.mode() {
     ///         EntryMode::FILE => {
-    ///             println!("Handling file {}", entry.path())
+    ///             println!(
+    ///                 "Handling file {} with size {}",
+    ///                 entry.path(),
+    ///                 meta.content_length()
+    ///             )
     ///         }
     ///         EntryMode::DIR => {
     ///             println!("Handling dir {}", entry.path())
@@ -1183,19 +1412,20 @@ impl Operator {
     /// # }
     /// ```
     ///
+    /// # Examples
+    ///
     /// ## List all files recursively
     ///
     /// ```no_run
     /// # use anyhow::Result;
-    /// # use futures::io;
     /// use futures::TryStreamExt;
     /// use opendal::EntryMode;
     /// use opendal::Metakey;
     /// use opendal::Operator;
     /// # #[tokio::main]
     /// # async fn test(op: Operator) -> Result<()> {
-    /// let mut ds = op.lister_with("path/to/dir/").delimiter("").await?;
-    /// while let Some(mut entry) = ds.try_next().await? {
+    /// let mut lister = op.lister_with("path/to/dir/").recursive(true).await?;
+    /// while let Some(mut entry) = lister.try_next().await? {
     ///     match entry.metadata().mode() {
     ///         EntryMode::FILE => {
     ///             println!("Handling file {}", entry.path())
@@ -1252,19 +1482,7 @@ impl Operator {
             path,
             OpList::default(),
             |inner, path, args| {
-                let fut = async move {
-                    if !validate_path(&path, EntryMode::DIR) {
-                        return Err(Error::new(
-                            ErrorKind::NotADirectory,
-                            "the path trying to list should end with `/`",
-                        )
-                        .with_operation("Operator::list")
-                        .with_context("service", inner.info().scheme().into_static())
-                        .with_context("path", &path));
-                    }
-
-                    Lister::create(inner, &path, args).await
-                };
+                let fut = async move { Lister::create(inner, &path, args).await };
                 Box::pin(fut)
             },
         ));
@@ -1302,6 +1520,41 @@ impl Operator {
 
         let rp = self.inner().presign(&path, op).await?;
         Ok(rp.into_presigned_request())
+    }
+
+    /// Presign an operation for stat(head).
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use anyhow::Result;
+    /// use futures::io;
+    /// use opendal::Operator;
+    /// use std::time::Duration;
+    ///
+    /// #[tokio::main]
+    /// async fn test(op: Operator) -> Result<()> {
+    ///     let signed_req = op.presign_stat_with("test",Duration::from_secs(3600)).override_content_disposition("attachment; filename=\"othertext.txt\"").await?;
+    /// #    Ok(())
+    /// # }
+    /// ```
+    pub fn presign_stat_with(&self, path: &str, expire: Duration) -> FuturePresignStat {
+        let path = normalize_path(path);
+
+        let fut = FuturePresignStat(OperatorFuture::new(
+            self.inner().clone(),
+            path,
+            (OpStat::default(), expire),
+            |inner, path, (args, dur)| {
+                let fut = async move {
+                    let op = OpPresign::new(args, dur);
+                    let rp = inner.presign(&path, op).await?;
+                    Ok(rp.into_presigned_request())
+                };
+                Box::pin(fut)
+            },
+        ));
+        fut
     }
 
     /// Presign an operation for read.

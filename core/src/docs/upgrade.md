@@ -1,3 +1,59 @@
+# Upgrade to v0.44
+
+## Public API
+
+### Moka Service Configuration
+
+- The `thread_pool_enabled` option has been removed.
+
+### List Prefix Supported
+
+After [RFC: List Prefix](crate::docs::rfcs::rfc_3243_list_prefix) landed, we have changed the behavior of `list` a path without `/`. OpenDAL used to return `NotADirectory` error, but now we will return the list of entries that start with given prefix instead.
+
+# Upgrade to v0.43
+
+## Public API
+
+### List Recursive
+
+After [RFC-3526: List Recursive](crate::docs::rfcs::rfc_3526_list_recursive) landed, we have changed the `list` API to accept `recursive` instead of `delimiter`:
+
+Users will need to change the following usage:
+
+- `op.list_with(path).delimiter("")` -> `op.list_with(path).recursive(true)`
+- `op.list_with(path).delimiter("/")` -> `op.list_with(path).recursive(false)`
+
+`delimiter` other than `""` and `"/"` is not supported anymore.
+
+### Stat a dir path
+
+After [RFC: List Prefix](crate::docs::rfcs::rfc_3243_list_prefix) landed, we have changed the behavior of `stat` a dir path:
+
+Here are the behavior list:
+
+| Case                   | Path            | Result                                     |
+|------------------------|-----------------|--------------------------------------------|
+| stat existing dir      | `abc/`          | Metadata with dir mode                     |
+| stat existing file     | `abc/def_file`  | Metadata with file mode                    |
+| stat dir without `/`   | `abc/def_dir`   | Error `NotFound` or metadata with dir mode |
+| stat file with `/`     | `abc/def_file/` | Error `NotFound`                           |
+| stat not existing path | `xyz`           | Error `NotFound`                           |
+
+Services like s3, azblob can handle `stat("abc/")` correctly by check if there are objects with prefix `abc/`.
+
+## Raw API
+
+### Lister Align
+
+We changed our internal `lister` implementation to align with the `list` public API for better performance and readability.
+
+- trait `Page` => `List`
+- struct `Pager` => `Lister`
+- trait `BlockingPage` => `BlockingList`
+- struct `BlockingPager` => `BlockingLister`
+
+Every call to `next` will return an entry instead a page of entries. Also, we changed our async list api into poll based instead of `async_trait`.
+
 # Upgrade to v0.42
 
 ## Public API

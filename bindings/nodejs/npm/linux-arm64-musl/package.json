@@ -1,0 +1,22 @@
+{
+  "name": "@opendal/lib-linux-arm64-musl",
+  "version": "0.44.1",
+  "repository": "git@github.com/apache/incubator-opendal.git",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "main": "opendal.linux-arm64-musl.node",
+  "files": [
+    "opendal.linux-arm64-musl.node"
+  ],
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">= 10"
+  },
+  "libc": [
+    "glibc"
+  ]
+}

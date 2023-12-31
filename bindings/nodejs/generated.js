@@ -256,6 +256,35 @@ switch (platform) {
           loadError = e
         }
         break
+      case 'riscv64':
+        if (isMusl()) {
+          localFileExisted = existsSync(
+            join(__dirname, 'opendal.linux-riscv64-musl.node')
+          )
+          try {
+            if (localFileExisted) {
+              nativeBinding = require('./opendal.linux-riscv64-musl.node')
+            } else {
+              nativeBinding = require('@opendal/lib-linux-riscv64-musl')
+            }
+          } catch (e) {
+            loadError = e
+          }
+        } else {
+          localFileExisted = existsSync(
+            join(__dirname, 'opendal.linux-riscv64-gnu.node')
+          )
+          try {
+            if (localFileExisted) {
+              nativeBinding = require('./opendal.linux-riscv64-gnu.node')
+            } else {
+              nativeBinding = require('@opendal/lib-linux-riscv64-gnu')
+            }
+          } catch (e) {
+            loadError = e
+          }
+        }
+        break
       default:
         throw new Error(`Unsupported architecture on Linux: ${arch}`)
     }
@@ -271,10 +300,17 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { Operator, Entry, Metadata, Lister, BlockingLister } = nativeBinding
+const { Capability, Operator, Entry, Metadata, BlockingReader, Reader, BlockingWriter, Writer, Lister, BlockingLister, Layer, RetryLayer } = nativeBinding
 
+module.exports.Capability = Capability
 module.exports.Operator = Operator
 module.exports.Entry = Entry
 module.exports.Metadata = Metadata
+module.exports.BlockingReader = BlockingReader
+module.exports.Reader = Reader
+module.exports.BlockingWriter = BlockingWriter
+module.exports.Writer = Writer
 module.exports.Lister = Lister
 module.exports.BlockingLister = BlockingLister
+module.exports.Layer = Layer
+module.exports.RetryLayer = RetryLayer

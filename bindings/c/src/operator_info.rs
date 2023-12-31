@@ -15,7 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::ffi::{c_char, CString};
+use std::ffi::c_char;
+use std::ffi::CString;
 
 use ::opendal as core;
 
@@ -115,10 +116,8 @@ pub struct opendal_capability {
     pub list_with_limit: bool,
     /// If backend supports list with start after.
     pub list_with_start_after: bool,
-    /// If backend support list with using slash as delimiter.
-    pub list_with_delimiter_slash: bool,
     /// If backend supports list without delimiter.
-    pub list_without_delimiter: bool,
+    pub list_with_recursive: bool,
 
     /// If operator supports presign.
     pub presign: bool,
@@ -264,8 +263,7 @@ impl From<core::Capability> for opendal_capability {
             list: value.list,
             list_with_limit: value.list_with_limit,
             list_with_start_after: value.list_with_start_after,
-            list_without_delimiter: value.list_without_delimiter,
-            list_with_delimiter_slash: value.list_with_delimiter_slash,
+            list_with_recursive: value.list_with_recursive,
             presign: value.presign,
             presign_read: value.presign_read,
             presign_stat: value.presign_stat,

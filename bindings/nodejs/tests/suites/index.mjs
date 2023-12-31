@@ -18,10 +18,11 @@
  */
 
 import { describe } from 'vitest'
-import { Operator } from '../../index.js'
+import { Operator, layers } from '../../index.js'
 import { checkRandomRootEnabled, generateRandomRoot, loadConfigFromEnv } from '../utils.mjs'
 
 import { run as AsyncIOTestRun } from './async.suite.mjs'
+import { run as ServicesTestRun } from './services.suite.mjs'
 import { run as SyncIOTestRun } from './sync.suite.mjs'
 
 export function runner(testName, scheme) {
@@ -33,13 +34,24 @@ export function runner(testName, scheme) {
   const config = loadConfigFromEnv(scheme)
 
   if (checkRandomRootEnabled()) {
-    config.root = generateRandomRoot(config.root)
+    if (config.root) {
+      config.root = generateRandomRoot(config.root)
+    } else {
+      console.warn("The root is not set. Won't generate random root.")
+    }
   }
 
-  const operator = scheme ? new Operator(scheme, config) : null
+  let operator = scheme ? new Operator(scheme, config) : null
+
+  let retryLayer = new layers.RetryLayer()
+  retryLayer.jitter = true
+  retryLayer.maxTimes = 4
+
+  operator = operator.layer(retryLayer.build())
 
   describe.skipIf(!operator)(testName, () => {
     AsyncIOTestRun(operator)
+    ServicesTestRun(operator)
     SyncIOTestRun(operator)
   })
 }

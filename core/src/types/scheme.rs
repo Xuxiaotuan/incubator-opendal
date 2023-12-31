@@ -38,6 +38,14 @@ pub enum Scheme {
     Azblob,
     /// [Azdls][crate::services::Azdls]: Azure Data Lake Storage Gen2.
     Azdls,
+    /// [B2][crate::services::B2]: Backblaze B2 Services.
+    B2,
+    /// [Seafile][crate::services::Seafile]: Seafile Services.
+    Seafile,
+    /// [Upyun][crate::services::Upyun]: Upyun Services.
+    Upyun,
+    /// [Chainsafe][crate::services::Chainsafe]: Chainsafe Services.
+    Chainsafe,
     /// [cacache][crate::services::Cacache]: cacache backend support.
     Cacache,
     /// [cloudflare-kv][crate::services::CloudflareKv]: Cloudflare KV services.
@@ -66,6 +74,10 @@ pub enum Scheme {
     Hdfs,
     /// [http][crate::services::Http]: HTTP backend.
     Http,
+    /// [huggingface][crate::services::Huggingface]: Huggingface services.
+    Huggingface,
+    /// [alluxio][created::services::Alluxio]: Alluxio services.
+    Alluxio,
 
     /// [ipmfs][crate::services::Ipfs]: IPFS HTTP Gateway
     Ipfs,
@@ -156,19 +168,23 @@ impl Scheme {
     ///
     /// let enabled_schemes = Scheme::enabled();
     /// if !enabled_schemes.contains(&Scheme::Memory) {
-    ///    panic!("s3 support is not enabled")
+    ///     panic!("s3 support is not enabled")
     /// }
     /// ```
     pub fn enabled() -> HashSet<Scheme> {
         HashSet::from([
             #[cfg(feature = "services-atomicserver")]
             Scheme::Atomicserver,
+            #[cfg(feature = "services-alluxio")]
+            Scheme::Alluxio,
             #[cfg(feature = "services-azblob")]
             Scheme::Azblob,
             #[cfg(feature = "services-azdls")]
             Scheme::Azdls,
             #[cfg(feature = "services-azfile")]
             Scheme::Azfile,
+            #[cfg(feature = "services-b2")]
+            Scheme::B2,
             #[cfg(feature = "services-cacache")]
             Scheme::Cacache,
             #[cfg(feature = "services-cos")]
@@ -193,6 +209,8 @@ impl Scheme {
             Scheme::Hdfs,
             #[cfg(feature = "services-http")]
             Scheme::Http,
+            #[cfg(feature = "services-huggingface")]
+            Scheme::Huggingface,
             #[cfg(feature = "services-ipfs")]
             Scheme::Ipfs,
             #[cfg(feature = "services-ipmfs")]
@@ -227,6 +245,10 @@ impl Scheme {
             Scheme::Rocksdb,
             #[cfg(feature = "services-s3")]
             Scheme::S3,
+            #[cfg(feature = "services-seafile")]
+            Scheme::Seafile,
+            #[cfg(feature = "services-upyun")]
+            Scheme::Upyun,
             #[cfg(feature = "services-sftp")]
             Scheme::Sftp,
             #[cfg(feature = "services-sled")]
@@ -273,11 +295,14 @@ impl FromStr for Scheme {
         match s.as_str() {
             "atomicserver" => Ok(Scheme::Atomicserver),
             "azblob" => Ok(Scheme::Azblob),
+            "alluxio" => Ok(Scheme::Alluxio),
             // Notes:
             //
             // OpenDAL used to call `azdls` as `azdfs`, we keep it for backward compatibility.
             // And abfs is widely used in hadoop ecosystem, keep it for easy to use.
             "azdls" | "azdfs" | "abfs" => Ok(Scheme::Azdls),
+            "b2" => Ok(Scheme::B2),
+            "chainsafe" => Ok(Scheme::Chainsafe),
             "cacache" => Ok(Scheme::Cacache),
             "cloudflare_kv" => Ok(Scheme::CloudflareKv),
             "cos" => Ok(Scheme::Cos),
@@ -293,6 +318,7 @@ impl FromStr for Scheme {
             "gridfs" => Ok(Scheme::Gridfs),
             "hdfs" => Ok(Scheme::Hdfs),
             "http" | "https" => Ok(Scheme::Http),
+            "huggingface" | "hf" => Ok(Scheme::Huggingface),
             "ftp" | "ftps" => Ok(Scheme::Ftp),
             "ipfs" | "ipns" => Ok(Scheme::Ipfs),
             "ipmfs" => Ok(Scheme::Ipmfs),
@@ -311,6 +337,8 @@ impl FromStr for Scheme {
             "redis" => Ok(Scheme::Redis),
             "rocksdb" => Ok(Scheme::Rocksdb),
             "s3" => Ok(Scheme::S3),
+            "seafile" => Ok(Scheme::Seafile),
+            "upyun" => Ok(Scheme::Upyun),
             "sftp" => Ok(Scheme::Sftp),
             "sled" => Ok(Scheme::Sled),
             "supabase" => Ok(Scheme::Supabase),
@@ -333,6 +361,8 @@ impl From<Scheme> for &'static str {
             Scheme::Atomicserver => "atomicserver",
             Scheme::Azblob => "azblob",
             Scheme::Azdls => "azdls",
+            Scheme::B2 => "b2",
+            Scheme::Chainsafe => "chainsafe",
             Scheme::Cacache => "cacache",
             Scheme::CloudflareKv => "cloudflare_kv",
             Scheme::Cos => "cos",
@@ -346,6 +376,7 @@ impl From<Scheme> for &'static str {
             Scheme::Gridfs => "gridfs",
             Scheme::Hdfs => "hdfs",
             Scheme::Http => "http",
+            Scheme::Huggingface => "huggingface",
             Scheme::Foundationdb => "foundationdb",
             Scheme::Ftp => "ftp",
             Scheme::Ipfs => "ipfs",
@@ -365,6 +396,7 @@ impl From<Scheme> for &'static str {
             Scheme::Redis => "redis",
             Scheme::Rocksdb => "rocksdb",
             Scheme::S3 => "s3",
+            Scheme::Seafile => "seafile",
             Scheme::Sftp => "sftp",
             Scheme::Sled => "sled",
             Scheme::Supabase => "supabase",
@@ -378,6 +410,8 @@ impl From<Scheme> for &'static str {
             Scheme::Azfile => "azfile",
             Scheme::Sqlite => "sqlite",
             Scheme::Mongodb => "mongodb",
+            Scheme::Alluxio => "alluxio",
+            Scheme::Upyun => "upyun",
             Scheme::Custom(v) => v,
         }
     }

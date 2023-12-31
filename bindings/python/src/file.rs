@@ -15,14 +15,19 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Remove this allow after <https://github.com/rust-lang/rust-clippy/issues/12039> fixed.
+#![allow(clippy::unnecessary_fallible_conversions)]
+
+use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::ops::DerefMut;
 use std::sync::Arc;
 
+use futures::AsyncReadExt;
 use futures::AsyncSeekExt;
-use futures::{AsyncReadExt, AsyncWriteExt};
+use futures::AsyncWriteExt;
 use pyo3::exceptions::PyIOError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;

@@ -20,7 +20,8 @@ use std::fmt::Debug;
 use std::fmt::Formatter;
 
 use async_trait::async_trait;
-use rusqlite::{params, Connection};
+use rusqlite::params;
+use rusqlite::Connection;
 use serde::Deserialize;
 use tokio::task;
 
@@ -175,7 +176,7 @@ impl Builder for SqliteBuilder {
             Some(v) => v,
             None => {
                 return Err(Error::new(ErrorKind::ConfigInvalid, "table is empty")
-                    .with_context("service", Scheme::Postgresql))
+                    .with_context("service", Scheme::Sqlite))
             }
         };
         let key_field = match self.config.key_field.clone() {
@@ -260,7 +261,6 @@ impl kv::Adapter for Adapter {
             Capability {
                 read: true,
                 write: true,
-                create_dir: true,
                 delete: true,
                 blocking: true,
                 ..Default::default()

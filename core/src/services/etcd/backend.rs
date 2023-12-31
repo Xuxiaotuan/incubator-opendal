@@ -195,17 +195,10 @@ impl Builder for EtcdBuilder {
     type Accessor = EtcdBackend;
 
     fn from_map(map: HashMap<String, String>) -> Self {
-        let mut builder = EtcdBuilder::default();
-
-        map.get("root").map(|v| builder.root(v));
-        map.get("endpoints").map(|v| builder.endpoints(v));
-        map.get("username").map(|v| builder.username(v));
-        map.get("password").map(|v| builder.password(v));
-        map.get("ca_path").map(|v| builder.ca_path(v));
-        map.get("cert_path").map(|v| builder.cert_path(v));
-        map.get("key_path").map(|v| builder.key_path(v));
-
-        builder
+        EtcdBuilder {
+            config: EtcdConfig::deserialize(ConfigDeserializer::new(map))
+                .expect("config deserialize must succeed"),
+        }
     }
 
     fn build(&mut self) -> Result<Self::Accessor> {
@@ -345,7 +338,6 @@ impl kv::Adapter for Adapter {
             Capability {
                 read: true,
                 write: true,
-                create_dir: true,
                 list: true,
 
                 ..Default::default()
@@ -381,10 +373,14 @@ impl kv::Adapter for Adapter {
         let resp = client.get(path, get_options).await?;
         let mut res = Vec::default();
         for kv in resp.kvs() {
-            res.push(kv.key_str().map(String::from).map_err(|err| {
+            let v = kv.key_str().map(String::from).map_err(|err| {
                 Error::new(ErrorKind::Unexpected, "store key is not valid utf-8 string")
                     .set_source(err)
-            })?);
+            })?;
+            if v == path {
+                continue;
+            }
+            res.push(v);
         }
 
         Ok(res)

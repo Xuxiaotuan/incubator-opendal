@@ -1,6 +1,6 @@
 ---
 title: Create a OpenDAL Release
-sidebar_position: 1
+sidebar_position: 3
 ---
 
 This document mainly introduces
@@ -99,6 +99,7 @@ This issue is used to track tasks of the opendal ${opendal_version} release.
   - [ ] java
   - [ ] nodejs
 - [ ] Update docs
+- [ ] Generate dependencies list
 - [ ] Push release candidate tag to GitHub
 
 #### ASF Side
@@ -120,7 +121,7 @@ This issue is used to track tasks of the opendal ${opendal_version} release.
 - [ ] Release Maven artifacts
 - [ ] Send the announcement
 
-For details of each step, please refer to: https://opendal.apache.org/docs/contributing/release
+For details of each step, please refer to: https://opendal.apache.org/community/committers/release
 ```
 
 ## GitHub Side
@@ -145,19 +146,23 @@ Please note that this version is the exact version of the release, not the relea
     - node.js: `bindings/nodejs/upgrade.md`
     - python: `bindings/python/upgrade.md`
 
+### Generate dependencies list
+
+Download and setup `cargo-deny`. You can refer to [cargo-deny](https://embarkstudios.github.io/cargo-deny/cli/index.html). 
+
+Running `python3 ./scripts/dependencies.py generate` to update the dependencies list of every package.
+
 ### Push release candidate tag
 
 After bump version PR gets merged, we can create a GitHub release for the release candidate:
 
 - Create a tag at `main` branch on the `Bump Version` / `Patch up version` commit: `git tag -s "v0.36.0-rc.1"`, please correctly check out the corresponding commit instead of directly tagging on the main branch.
 - Push tags to GitHub: `git push --tags`.
-- Create Release on the newly created tag
-    - If there are breaking changes, please add the content from `upgrade.md` before.
+
 
 :::note
 
 Pushing a Git tag to GitHub repo will trigger a GitHub Actions workflow that creates a staging Maven release on https://repository.apache.org which can be verified on voting.
-And
 
 :::
 
@@ -334,7 +339,7 @@ ${name}
 
 Example: <https://lists.apache.org/thread/c211gqq2yl15jbxqk4rcnq1bdqltjm5l>
 
-After at least 3 `+1` binding vote (from OpenDAL Podling PMC member and committers) and no veto, claim the vote result:
+After at least 3 `+1` binding vote ([from OpenDAL Podling PMC member](https://opendal.apache.org/community/#committers)) and no veto, claim the vote result:
 
 Title:
 
@@ -349,13 +354,17 @@ Hello, Apache OpenDAL(incubating) Community,
 
 The vote to release Apache OpenDAL(Incubating) ${release_version} has passed.
 
-The vote PASSED with 3 binding +1 and 0 -1 vote:
+The vote PASSED with 3 +1 binding and 1 +1 non-binding votes, no +0 or -1 votes:
 
 Binding votes:
 
 - xxx
 - yyy
 - zzz
+
+Non-Binding votes:
+
+- aaa
 
 Vote thread: ${vote_thread_url}
 

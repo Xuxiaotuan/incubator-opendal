@@ -24,17 +24,17 @@ const lightCodeTheme = require('prism-react-renderer/themes/github');
 const darkCodeTheme = require('prism-react-renderer/themes/dracula');
 const repoAddress = 'https://github.com/apache/incubator-opendal';
 
+const baseUrl = process.env.OPENDAL_WEBSITE_BASE_URL ? process.env.OPENDAL_WEBSITE_BASE_URL : '/';
+const websiteNotLatest = process.env.OPENDAL_WEBSITE_NOT_LATEST ? process.env.OPENDAL_WEBSITE_NOT_LATEST : false;
+
 /** @type {import('@docusaurus/types').Config} */
 const config = {
-  title: 'Apache OpenDAL',
+  title: 'Apache OpenDAL™',
   tagline: 'Open Data Access Layer: Access data freely, painlessly, and efficiently',
   favicon: 'img/favicon.ico',
 
   url: 'https://opendal.apache.org/',
   baseUrl: '/',
-
-  organizationName: 'Apache',
-  projectName: 'OpenDAL',
 
   onBrokenLinks: 'warn',
   onBrokenMarkdownLinks: 'warn',
@@ -133,22 +133,6 @@ const config = {
                 label: 'Java Binding',
                 to: 'pathname:///docs/java/'
               },
-              {
-                label: 'C Binding',
-                to: 'pathname:///docs/c/'
-              },
-              {
-                label: 'Lua Binding',
-                to: 'pathname:///docs/lua/'
-              },
-              {
-                label: 'Haskell Binding',
-                to: 'pathname:///docs/haskell/'
-              },
-              {
-                label: 'C++ Binding',
-                to: 'pathname:///docs/cpp/'
-              }
             ]
           },
           {
@@ -236,7 +220,25 @@ const config = {
         darkTheme: darkCodeTheme,
         additionalLanguages: ['rust', 'java', 'groovy'],
       },
+      zoom: {
+        selector: '.markdown img',
+        background: 'rgba(255, 255, 255, 0.8)',
+        config: {}
+      }
     }),
 };
 
-module.exports = config;
+function generateConfig() {
+  config.baseUrl = baseUrl
+
+  if (websiteNotLatest) {
+    config.themeConfig.announcementBar = {
+      id: 'announcementBar-0', // Increment on change
+      content: 'You are viewing the documentation of a <strong>historical release</strong>. <a href="https://nightlies.apache.org/opendal/opendal-docs-stable/">View the latest stable release</a>.',
+    }
+  }
+
+  return config
+}
+
+module.exports = generateConfig();

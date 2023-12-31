@@ -29,7 +29,7 @@ use reqsign::HuaweicloudObsSigner;
 
 use super::core::ObsCore;
 use super::error::parse_error;
-use super::pager::ObsPager;
+use super::lister::ObsLister;
 use super::writer::ObsWriter;
 use crate::raw::*;
 use crate::services::obs::writer::ObsWriters;
@@ -252,8 +252,8 @@ impl Accessor for ObsBackend {
     type BlockingReader = ();
     type Writer = ObsWriters;
     type BlockingWriter = ();
-    type Pager = ObsPager;
-    type BlockingPager = ();
+    type Lister = oio::PageLister<ObsLister>;
+    type BlockingLister = ();
 
     fn info(&self) -> AccessorInfo {
         let mut am = AccessorInfo::default();
@@ -291,12 +291,10 @@ impl Accessor for ObsBackend {
                 },
 
                 delete: true,
-                create_dir: true,
                 copy: true,
 
                 list: true,
-                list_with_delimiter_slash: true,
-                list_without_delimiter: true,
+                list_with_recursive: true,
 
                 presign: true,
                 presign_stat: true,
@@ -330,29 +328,6 @@ impl Accessor for ObsBackend {
         )))
     }
 
-    async fn create_dir(&self, path: &str, _: OpCreateDir) -> Result<RpCreateDir> {
-        let mut req = self.core.obs_put_object_request(
-            path,
-            Some(0),
-            &OpWrite::default(),
-            AsyncBody::Empty,
-        )?;
-
-        self.core.sign(&mut req).await?;
-
-        let resp = self.core.send(req).await?;
-
-        let status = resp.status();
-
-        match status {
-            StatusCode::CREATED | StatusCode::OK => {
-                resp.into_body().consume().await?;
-                Ok(RpCreateDir::default())
-            }
-            _ => Err(parse_error(resp).await?),
-        }
-    }
-
     async fn read(&self, path: &str, args: OpRead) -> Result<(RpRead, Self::Reader)> {
         let resp = self.core.obs_get_object(path, &args).await?;
 
@@ -361,9 +336,16 @@ impl Accessor for ObsBackend {
         match status {
             StatusCode::OK | StatusCode::PARTIAL_CONTENT => {
                 let size = parse_content_length(resp.headers())?;
-                Ok((RpRead::new().with_size(size), resp.into_body()))
+                let range = parse_content_range(resp.headers())?;
+                Ok((
+                    RpRead::new().with_size(size).with_range(range),
+                    resp.into_body(),
+                ))
             }
-            StatusCode::RANGE_NOT_SATISFIABLE => Ok((RpRead::new(), IncomingAsyncBody::empty())),
+            StatusCode::RANGE_NOT_SATISFIABLE => {
+                resp.into_body().consume().await?;
+                Ok((RpRead::new().with_size(Some(0)), IncomingAsyncBody::empty()))
+            }
             _ => Err(parse_error(resp).await?),
         }
     }
@@ -395,11 +377,6 @@ impl Accessor for ObsBackend {
     }
 
     async fn stat(&self, path: &str, args: OpStat) -> Result<RpStat> {
-        // Stat root always returns a DIR.
-        if path == "/" {
-            return Ok(RpStat::new(Metadata::new(EntryMode::DIR)));
-        }
-
         let resp = self.core.obs_head_object(path, &args).await?;
 
         let status = resp.status();
@@ -427,10 +404,8 @@ impl Accessor for ObsBackend {
         }
     }
 
-    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Pager)> {
-        Ok((
-            RpList::default(),
-            ObsPager::new(self.core.clone(), path, args.delimiter(), args.limit()),
-        ))
+    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Lister)> {
+        let l = ObsLister::new(self.core.clone(), path, args.recursive(), args.limit());
+        Ok((RpList::default(), oio::PageLister::new(l)))
     }
 }

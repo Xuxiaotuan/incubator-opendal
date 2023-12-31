@@ -29,12 +29,10 @@ use tokio::sync::OnceCell;
 
 use super::error::parse_error;
 use super::error::parse_error_msg;
+use super::lister::WebhdfsLister;
 use super::message::BooleanResp;
-use super::message::DirectoryListingWrapper;
 use super::message::FileStatusType;
 use super::message::FileStatusWrapper;
-use super::message::FileStatusesWrapper;
-use super::pager::WebhdfsPager;
 use super::writer::WebhdfsWriter;
 use crate::raw::*;
 use crate::*;
@@ -277,7 +275,10 @@ impl WebhdfsBackend {
         Ok(req)
     }
 
-    fn webhdfs_list_status_request(&self, path: &str) -> Result<Request<AsyncBody>> {
+    pub async fn webhdfs_list_status_request(
+        &self,
+        path: &str,
+    ) -> Result<Response<IncomingAsyncBody>> {
         let p = build_abs_path(&self.root, path);
         let mut url = format!(
             "{}/webhdfs/v1/{}?op=LISTSTATUS",
@@ -291,29 +292,24 @@ impl WebhdfsBackend {
         let req = Request::get(&url)
             .body(AsyncBody::Empty)
             .map_err(new_request_build_error)?;
-        Ok(req)
+        self.client.send(req).await
     }
 
-    pub(super) fn webhdfs_list_status_batch_request(
+    pub async fn webhdfs_list_status_batch_request(
         &self,
         path: &str,
-        args: &OpList,
-    ) -> Result<Request<AsyncBody>> {
+        start_after: &str,
+    ) -> Result<Response<IncomingAsyncBody>> {
         let p = build_abs_path(&self.root, path);
 
-        // if it's not the first time to call LISTSTATUS_BATCH, we will add &startAfter=<CHILD>
-        let start_after_param = match args.start_after() {
-            Some(sa) if sa.is_empty() => String::new(),
-            Some(sa) => format!("&startAfter={}", sa),
-            None => String::new(),
-        };
-
         let mut url = format!(
-            "{}/webhdfs/v1/{}?op=LISTSTATUS_BATCH{}",
+            "{}/webhdfs/v1/{}?op=LISTSTATUS_BATCH",
             self.endpoint,
             percent_encode_path(&p),
-            start_after_param
         );
+        if !start_after.is_empty() {
+            url += format!("&startAfter={}", start_after).as_str();
+        }
         if let Some(auth) = &self.auth {
             url += format!("&{auth}").as_str();
         }
@@ -321,7 +317,7 @@ impl WebhdfsBackend {
         let req = Request::get(&url)
             .body(AsyncBody::Empty)
             .map_err(new_request_build_error)?;
-        Ok(req)
+        self.client.send(req).await
     }
 
     async fn webhdfs_read_file(
@@ -402,8 +398,8 @@ impl Accessor for WebhdfsBackend {
     type BlockingReader = ();
     type Writer = oio::OneShotWriter<WebhdfsWriter>;
     type BlockingWriter = ();
-    type Pager = WebhdfsPager;
-    type BlockingPager = ();
+    type Lister = oio::PageLister<WebhdfsLister>;
+    type BlockingLister = ();
 
     fn info(&self) -> AccessorInfo {
         let mut am = AccessorInfo::default();
@@ -421,7 +417,6 @@ impl Accessor for WebhdfsBackend {
                 delete: true,
 
                 list: true,
-                list_with_delimiter_slash: true,
 
                 ..Default::default()
             });
@@ -471,7 +466,11 @@ impl Accessor for WebhdfsBackend {
         match resp.status() {
             StatusCode::OK | StatusCode::PARTIAL_CONTENT => {
                 let size = parse_content_length(resp.headers())?;
-                Ok((RpRead::new().with_size(size), resp.into_body()))
+                let range = parse_content_range(resp.headers())?;
+                Ok((
+                    RpRead::new().with_size(size).with_range(range),
+                    resp.into_body(),
+                ))
             }
             // WebHDFS will returns 403 when range is outside of the end.
             StatusCode::FORBIDDEN => {
@@ -484,7 +483,10 @@ impl Accessor for WebhdfsBackend {
                     Err(parse_error_msg(parts, &s)?)
                 }
             }
-            StatusCode::RANGE_NOT_SATISFIABLE => Ok((RpRead::new(), IncomingAsyncBody::empty())),
+            StatusCode::RANGE_NOT_SATISFIABLE => {
+                resp.into_body().consume().await?;
+                Ok((RpRead::new().with_size(Some(0)), IncomingAsyncBody::empty()))
+            }
             _ => Err(parse_error(resp).await?),
         }
     }
@@ -540,55 +542,16 @@ impl Accessor for WebhdfsBackend {
         }
     }
 
-    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Pager)> {
-        if args.delimiter() != "/" {
+    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Lister)> {
+        if args.recursive() {
             return Err(Error::new(
                 ErrorKind::Unsupported,
-                "WebHDFS only support delimiter `/`",
+                "WebHDFS doesn't support list with recursive",
             ));
         }
 
         let path = path.trim_end_matches('/');
-
-        if !self.disable_list_batch {
-            let req = self.webhdfs_list_status_batch_request(path, &OpList::default())?;
-            let resp = self.client.send(req).await?;
-            match resp.status() {
-                StatusCode::OK => {
-                    let bs = resp.into_body().bytes().await?;
-                    let directory_listing = serde_json::from_slice::<DirectoryListingWrapper>(&bs)
-                        .map_err(new_json_deserialize_error)?
-                        .directory_listing;
-                    let file_statuses = directory_listing.partial_listing.file_statuses.file_status;
-                    let mut objects = WebhdfsPager::new(self.clone(), path, file_statuses);
-                    objects.set_remaining_entries(directory_listing.remaining_entries);
-                    Ok((RpList::default(), objects))
-                }
-                StatusCode::NOT_FOUND => {
-                    let objects = WebhdfsPager::new(self.clone(), path, vec![]);
-                    Ok((RpList::default(), objects))
-                }
-                _ => Err(parse_error(resp).await?),
-            }
-        } else {
-            let req = self.webhdfs_list_status_request(path)?;
-            let resp = self.client.send(req).await?;
-            match resp.status() {
-                StatusCode::OK => {
-                    let bs = resp.into_body().bytes().await?;
-                    let file_statuses = serde_json::from_slice::<FileStatusesWrapper>(&bs)
-                        .map_err(new_json_deserialize_error)?
-                        .file_statuses
-                        .file_status;
-                    let objects = WebhdfsPager::new(self.clone(), path, file_statuses);
-                    Ok((RpList::default(), objects))
-                }
-                StatusCode::NOT_FOUND => {
-                    let objects = WebhdfsPager::new(self.clone(), path, vec![]);
-                    Ok((RpList::default(), objects))
-                }
-                _ => Err(parse_error(resp).await?),
-            }
-        }
+        let l = WebhdfsLister::new(self.clone(), path);
+        Ok((RpList::default(), oio::PageLister::new(l)))
     }
 }

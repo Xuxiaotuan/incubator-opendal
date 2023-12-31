@@ -24,9 +24,9 @@ use async_trait::async_trait;
 use http::StatusCode;
 use log::debug;
 
-use super::core::SwiftCore;
+use super::core::*;
 use super::error::parse_error;
-use super::pager::SwiftPager;
+use super::lister::SwiftLister;
 use super::writer::SwiftWriter;
 use crate::raw::*;
 use crate::*;
@@ -218,8 +218,8 @@ impl Accessor for SwiftBackend {
     type BlockingReader = ();
     type Writer = oio::OneShotWriter<SwiftWriter>;
     type BlockingWriter = ();
-    type Pager = SwiftPager;
-    type BlockingPager = ();
+    type Lister = oio::PageLister<SwiftLister>;
+    type BlockingLister = ();
 
     fn info(&self) -> AccessorInfo {
         let mut am = AccessorInfo::default();
@@ -233,32 +233,15 @@ impl Accessor for SwiftBackend {
                 read_with_range: true,
 
                 write: true,
-                create_dir: true,
+                write_can_empty: true,
                 delete: true,
 
                 list: true,
-                list_with_delimiter_slash: true,
+                list_with_recursive: true,
 
                 ..Default::default()
             });
         am
-    }
-
-    async fn create_dir(&self, path: &str, _args: OpCreateDir) -> Result<RpCreateDir> {
-        let resp = self
-            .core
-            .swift_create_object(path, AsyncBody::Empty)
-            .await?;
-
-        let status = resp.status();
-
-        match status {
-            StatusCode::CREATED | StatusCode::OK => {
-                resp.into_body().consume().await?;
-                Ok(RpCreateDir::default())
-            }
-            _ => Err(parse_error(resp).await?),
-        }
     }
 
     async fn read(&self, path: &str, args: OpRead) -> Result<(RpRead, Self::Reader)> {
@@ -267,9 +250,16 @@ impl Accessor for SwiftBackend {
         match resp.status() {
             StatusCode::OK | StatusCode::PARTIAL_CONTENT => {
                 let size = parse_content_length(resp.headers())?;
-                Ok((RpRead::new().with_size(size), resp.into_body()))
+                let range = parse_content_range(resp.headers())?;
+                Ok((
+                    RpRead::new().with_size(size).with_range(range),
+                    resp.into_body(),
+                ))
             }
-            StatusCode::RANGE_NOT_SATISFIABLE => Ok((RpRead::new(), IncomingAsyncBody::empty())),
+            StatusCode::RANGE_NOT_SATISFIABLE => {
+                resp.into_body().consume().await?;
+                Ok((RpRead::new().with_size(Some(0)), IncomingAsyncBody::empty()))
+            }
             _ => Err(parse_error(resp).await?),
         }
     }
@@ -308,10 +298,6 @@ impl Accessor for SwiftBackend {
                 let meta = parse_into_metadata(path, resp.headers())?;
                 Ok(RpStat::new(meta))
             }
-            // If the path is a container, the server will return a 204 response.
-            StatusCode::NOT_FOUND if path.ends_with('/') => {
-                Ok(RpStat::new(Metadata::new(EntryMode::DIR)))
-            }
             _ => Err(parse_error(resp).await?),
         }
     }
@@ -328,13 +314,14 @@ impl Accessor for SwiftBackend {
         }
     }
 
-    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Pager)> {
-        let op = SwiftPager::new(
+    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Lister)> {
+        let l = SwiftLister::new(
             self.core.clone(),
             path.to_string(),
-            args.delimiter().to_string(),
+            args.recursive(),
+            args.limit(),
         );
 
-        Ok((RpList::default(), op))
+        Ok((RpList::default(), oio::PageLister::new(l)))
     }
 }

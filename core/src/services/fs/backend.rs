@@ -24,7 +24,7 @@ use chrono::DateTime;
 use log::debug;
 use uuid::Uuid;
 
-use super::pager::FsPager;
+use super::lister::FsLister;
 use super::writer::FsWriter;
 use crate::raw::*;
 use crate::*;
@@ -35,7 +35,6 @@ use crate::*;
 pub struct FsBuilder {
     root: Option<PathBuf>,
     atomic_write_dir: Option<PathBuf>,
-    enable_path_check: bool,
 }
 
 impl FsBuilder {
@@ -72,9 +71,8 @@ impl FsBuilder {
     ///
     /// Enabling this feature will lead to extra metadata call in all
     /// operations.
+    #[deprecated(note = "path always checked since RFC-3243 List Prefix")]
     pub fn enable_path_check(&mut self) -> &mut Self {
-        self.enable_path_check = true;
-
         self
     }
 }
@@ -165,7 +163,6 @@ impl Builder for FsBuilder {
         Ok(FsBackend {
             root,
             atomic_write_dir,
-            enable_path_check: self.enable_path_check,
         })
     }
 }
@@ -175,7 +172,6 @@ impl Builder for FsBuilder {
 pub struct FsBackend {
     root: PathBuf,
     atomic_write_dir: Option<PathBuf>,
-    enable_path_check: bool,
 }
 
 #[inline]
@@ -248,8 +244,8 @@ impl Accessor for FsBackend {
     type BlockingReader = oio::StdReader<std::fs::File>;
     type Writer = FsWriter<tokio::fs::File>;
     type BlockingWriter = FsWriter<std::fs::File>;
-    type Pager = Option<FsPager<tokio::fs::ReadDir>>;
-    type BlockingPager = Option<FsPager<std::fs::ReadDir>>;
+    type Lister = Option<FsLister<tokio::fs::ReadDir>>;
+    type BlockingLister = Option<FsLister<std::fs::ReadDir>>;
 
     fn info(&self) -> AccessorInfo {
         let mut am = AccessorInfo::default();
@@ -269,7 +265,6 @@ impl Accessor for FsBackend {
                 delete: true,
 
                 list: true,
-                list_with_delimiter_slash: true,
 
                 copy: true,
                 rename: true,
@@ -308,23 +303,6 @@ impl Accessor for FsBackend {
             .open(&p)
             .await
             .map_err(new_std_io_error)?;
-
-        if self.enable_path_check {
-            // Get fs metadata of file at given path, ensuring it is not a false-positive due to slash normalization.
-            let meta = f.metadata().await.map_err(new_std_io_error)?;
-            if meta.is_dir() != path.ends_with('/') {
-                return Err(Error::new(
-                    ErrorKind::NotFound,
-                    "file mode is not match with its path",
-                ));
-            }
-            if meta.is_dir() {
-                return Err(Error::new(
-                    ErrorKind::IsADirectory,
-                    "given path is a directory",
-                ));
-            }
-        }
 
         let r = oio::TokioReader::new(f);
         Ok((RpRead::new(), r))
@@ -401,13 +379,6 @@ impl Accessor for FsBackend {
 
         let meta = tokio::fs::metadata(&p).await.map_err(new_std_io_error)?;
 
-        if self.enable_path_check && meta.is_dir() != path.ends_with('/') {
-            return Err(Error::new(
-                ErrorKind::NotFound,
-                "file mode is not match with its path",
-            ));
-        }
-
         let mode = if meta.is_dir() {
             EntryMode::DIR
         } else if meta.is_file() {
@@ -446,7 +417,7 @@ impl Accessor for FsBackend {
         }
     }
 
-    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Pager)> {
+    async fn list(&self, path: &str, _: OpList) -> Result<(RpList, Self::Lister)> {
         let p = self.root.join(path.trim_end_matches('/'));
 
         let f = match tokio::fs::read_dir(&p).await {
@@ -460,7 +431,7 @@ impl Accessor for FsBackend {
             }
         };
 
-        let rd = FsPager::new(&self.root, f, args.limit());
+        let rd = FsLister::new(&self.root, f);
 
         Ok((RpList::default(), Some(rd)))
     }
@@ -480,23 +451,6 @@ impl Accessor for FsBackend {
             .read(true)
             .open(p)
             .map_err(new_std_io_error)?;
-
-        if self.enable_path_check {
-            // Get fs metadata of file at given path, ensuring it is not a false-positive due to slash normalization.
-            let meta = f.metadata().map_err(new_std_io_error)?;
-            if meta.is_dir() != path.ends_with('/') {
-                return Err(Error::new(
-                    ErrorKind::NotFound,
-                    "file mode is not match with its path",
-                ));
-            }
-            if meta.is_dir() {
-                return Err(Error::new(
-                    ErrorKind::IsADirectory,
-                    "given path is a directory",
-                ));
-            }
-        }
 
         let r = oio::StdReader::new(f);
 
@@ -572,13 +526,6 @@ impl Accessor for FsBackend {
 
         let meta = std::fs::metadata(p).map_err(new_std_io_error)?;
 
-        if self.enable_path_check && meta.is_dir() != path.ends_with('/') {
-            return Err(Error::new(
-                ErrorKind::NotFound,
-                "file mode is not match with its path",
-            ));
-        }
-
         let mode = if meta.is_dir() {
             EntryMode::DIR
         } else if meta.is_file() {
@@ -617,7 +564,7 @@ impl Accessor for FsBackend {
         }
     }
 
-    fn blocking_list(&self, path: &str, args: OpList) -> Result<(RpList, Self::BlockingPager)> {
+    fn blocking_list(&self, path: &str, _: OpList) -> Result<(RpList, Self::BlockingLister)> {
         let p = self.root.join(path.trim_end_matches('/'));
 
         let f = match std::fs::read_dir(p) {
@@ -631,7 +578,7 @@ impl Accessor for FsBackend {
             }
         };
 
-        let rd = FsPager::new(&self.root, f, args.limit());
+        let rd = FsLister::new(&self.root, f);
 
         Ok((RpList::default(), Some(rd)))
     }

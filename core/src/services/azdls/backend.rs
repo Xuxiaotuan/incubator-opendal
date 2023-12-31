@@ -29,7 +29,7 @@ use reqsign::AzureStorageSigner;
 
 use super::core::AzdlsCore;
 use super::error::parse_error;
-use super::pager::AzdlsPager;
+use super::lister::AzdlsLister;
 use super::writer::AzdlsWriter;
 use crate::raw::*;
 use crate::services::azdls::writer::AzdlsWriters;
@@ -233,8 +233,8 @@ impl Accessor for AzdlsBackend {
     type BlockingReader = ();
     type Writer = AzdlsWriters;
     type BlockingWriter = ();
-    type Pager = AzdlsPager;
-    type BlockingPager = ();
+    type Lister = oio::PageLister<AzdlsLister>;
+    type BlockingLister = ();
 
     fn info(&self) -> AccessorInfo {
         let mut am = AccessorInfo::default();
@@ -255,7 +255,6 @@ impl Accessor for AzdlsBackend {
                 rename: true,
 
                 list: true,
-                list_with_delimiter_slash: true,
 
                 ..Default::default()
             });
@@ -294,9 +293,16 @@ impl Accessor for AzdlsBackend {
         match status {
             StatusCode::OK | StatusCode::PARTIAL_CONTENT => {
                 let size = parse_content_length(resp.headers())?;
-                Ok((RpRead::new().with_size(size), resp.into_body()))
+                let range = parse_content_range(resp.headers())?;
+                Ok((
+                    RpRead::new().with_size(size).with_range(range),
+                    resp.into_body(),
+                ))
             }
-            StatusCode::RANGE_NOT_SATISFIABLE => Ok((RpRead::new(), IncomingAsyncBody::empty())),
+            StatusCode::RANGE_NOT_SATISFIABLE => {
+                resp.into_body().consume().await?;
+                Ok((RpRead::new().with_size(Some(0)), IncomingAsyncBody::empty()))
+            }
             _ => Err(parse_error(resp).await?),
         }
     }
@@ -343,15 +349,42 @@ impl Accessor for AzdlsBackend {
 
         let resp = self.core.azdls_get_properties(path).await?;
 
-        let status = resp.status();
-
-        match status {
-            StatusCode::OK => parse_into_metadata(path, resp.headers()).map(RpStat::new),
-            StatusCode::NOT_FOUND if path.ends_with('/') => {
-                Ok(RpStat::new(Metadata::new(EntryMode::DIR)))
-            }
-            _ => Err(parse_error(resp).await?),
+        if resp.status() != StatusCode::OK {
+            return Err(parse_error(resp).await?);
         }
+
+        let mut meta = parse_into_metadata(path, resp.headers())?;
+        let resource = resp
+            .headers()
+            .get("x-ms-resource-type")
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::Unexpected,
+                    "azdls should return x-ms-resource-type header, but it's missing",
+                )
+            })?
+            .to_str()
+            .map_err(|err| {
+                Error::new(
+                    ErrorKind::Unexpected,
+                    "azdls should return x-ms-resource-type header, but it's not a valid string",
+                )
+                .set_source(err)
+            })?;
+
+        meta = match resource {
+            "file" => meta.with_mode(EntryMode::FILE),
+            "directory" => meta.with_mode(EntryMode::DIR),
+            v => {
+                return Err(Error::new(
+                    ErrorKind::Unexpected,
+                    "azdls returns not supported x-ms-resource-type",
+                )
+                .with_context("resource", v))
+            }
+        };
+
+        Ok(RpStat::new(meta))
     }
 
     async fn delete(&self, path: &str, _: OpDelete) -> Result<RpDelete> {
@@ -365,10 +398,10 @@ impl Accessor for AzdlsBackend {
         }
     }
 
-    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Pager)> {
-        let op = AzdlsPager::new(self.core.clone(), path.to_string(), args.limit());
+    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Lister)> {
+        let l = AzdlsLister::new(self.core.clone(), path.to_string(), args.limit());
 
-        Ok((RpList::default(), op))
+        Ok((RpList::default(), oio::PageLister::new(l)))
     }
 }
 

@@ -19,15 +19,12 @@ name: Bindings Python CI
 
 on:
   push:
-    branches:
-      - main
     tags:
       - '*'
   pull_request:
     branches:
       - main
     paths:
-      - "bindings/python/**"
       - ".github/workflows/bindings_python.yml"
   workflow_dispatch:
 
@@ -39,10 +36,8 @@ permissions:
   contents: read
 
 jobs:
-
   sdist:
     runs-on: ubuntu-latest
-    if: "startsWith(github.ref, 'refs/tags/')"
     steps:
       - uses: actions/checkout@v4
       - uses: PyO3/maturin-action@v1
@@ -58,7 +53,6 @@ jobs:
 
   linux:
     runs-on: ubuntu-latest
-    if: "startsWith(github.ref, 'refs/tags/')"
     strategy:
       matrix:
         target: [x86_64, aarch64, armv7l]
@@ -70,7 +64,10 @@ jobs:
           manylinux: auto
           working-directory: "bindings/python"
           command: build
-          args: --release -o dist --find-interpreter
+          args: --release -o dist --find-interpreter --features=pyo3/extension-module,services-all
+        env:
+          # Workaround ring 0.17 build issue
+          CFLAGS_aarch64_unknown_linux_gnu: "-D__ARM_ARCH=8"
       - name: Upload wheels
         uses: actions/upload-artifact@v3
         with:
@@ -79,14 +76,13 @@ jobs:
 
   windows:
     runs-on: windows-latest
-    if: "startsWith(github.ref, 'refs/tags/')"
     steps:
       - uses: actions/checkout@v4
       - uses: PyO3/maturin-action@v1
         with:
           working-directory: "bindings/python"
           command: build
-          args: --release -o dist --find-interpreter
+          args: --release -o dist --find-interpreter --features=pyo3/extension-module,services-all
       - name: Upload wheels
         uses: actions/upload-artifact@v3
         with:
@@ -95,7 +91,6 @@ jobs:
 
   macos:
     runs-on: macos-latest
-    if: "startsWith(github.ref, 'refs/tags/')"
     steps:
       - uses: actions/checkout@v4
       - uses: PyO3/maturin-action@v1
@@ -103,7 +98,7 @@ jobs:
           working-directory: "bindings/python"
           command: build
           target: universal2-apple-darwin
-          args: --release -o dist --find-interpreter
+          args: --release -o dist --find-interpreter --features=pyo3/extension-module,services-all
       - name: Upload wheels
         uses: actions/upload-artifact@v3
         with:
@@ -113,7 +108,7 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
-    if: "startsWith(github.ref, 'refs/tags/') && !contains(github.ref, '-')"
+    if: "startsWith(github.ref, 'refs/tags/')"
     permissions:
       contents: read
       id-token: write
@@ -122,6 +117,17 @@ jobs:
       - uses: actions/download-artifact@v3
         with:
           name: wheels
-      - uses: pypa/gh-action-pypi-publish@release/v1
+          path: bindings/python/dist
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        if: "contains(github.ref, '-')"
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
+          packages-dir: bindings/python/dist
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        if: "!contains(github.ref, '-')"
         with:
           skip-existing: true
+          packages-dir: bindings/python/dist

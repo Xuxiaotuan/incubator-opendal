@@ -56,10 +56,12 @@ services-all = [
   "services-etcd",
   # FIXME this requires a preinstalled fdb library
   # "services-foundationdb",
-  "services-ftp",
+  # FIXME waiting for this issue close https://github.com/async-rs/async-tls/issues/55
+  #  "services-ftp",
   "services-gdrive",
   # FIXME how to support HDFS services in bindings?
   # "services-hdfs",
+  "services-huggingface",
   "services-ipfs",
   "services-memcached",
   "services-mini-moka",
@@ -81,6 +83,10 @@ services-all = [
   "services-gridfs",
   "services-sqlite",
   "services-libsql",
+  "services-alluxio",
+  "services-b2",
+  "services-seafile",
+  "services-upyun",
 ]
 
 # Default services provided by opendal.
@@ -100,7 +106,10 @@ services-webdav = ["opendal/services-webdav"]
 services-webhdfs = ["opendal/services-webhdfs"]
 
 # Optional services provided by opendal.
+services-alluxio = ["opendal/services-alluxio"]
 services-azfile = ["opendal/services-azfile"]
+services-upyun = ["opendal/services-upyun"]
+services-b2 = ["opendal/services-b2"]
 services-cacache = ["opendal/services-cacache"]
 services-dashmap = ["opendal/services-dashmap"]
 services-dropbox = ["opendal/services-dropbox"]
@@ -110,6 +119,7 @@ services-ftp = ["opendal/services-ftp"]
 services-gdrive = ["opendal/services-gdrive"]
 services-gridfs = ["opendal/services-gridfs"]
 services-hdfs = ["opendal/services-hdfs"]
+services-huggingface = ["opendal/services-huggingface"]
 services-ipfs = ["opendal/services-ipfs"]
 services-libsql = ["opendal/services-libsql"]
 services-memcached = ["opendal/services-memcached"]
@@ -126,6 +136,7 @@ services-rocksdb = ["opendal/services-rocksdb"]
 services-sftp = ["opendal/services-sftp"]
 services-sled = ["opendal/services-sled"]
 services-sqlite = ["opendal/services-sqlite"]
+services-seafile = ["opendal/services-seafile"]
 services-supabase = ["opendal/services-supabase"]
 services-swift = ["opendal/services-swift"]
 services-tikv = ["opendal/services-tikv"]

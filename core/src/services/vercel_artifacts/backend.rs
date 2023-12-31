@@ -49,8 +49,8 @@ impl Accessor for VercelArtifactsBackend {
     type BlockingReader = ();
     type Writer = oio::OneShotWriter<VercelArtifactsWriter>;
     type BlockingWriter = ();
-    type Pager = ();
-    type BlockingPager = ();
+    type Lister = ();
+    type BlockingLister = ();
 
     fn info(&self) -> AccessorInfo {
         let mut ma = AccessorInfo::default();
@@ -93,10 +93,6 @@ impl Accessor for VercelArtifactsBackend {
     }
 
     async fn stat(&self, path: &str, _args: OpStat) -> Result<RpStat> {
-        if (path == "/") || (path.ends_with('/')) {
-            return Ok(RpStat::new(Metadata::new(EntryMode::DIR)));
-        }
-
         let res = self.vercel_artifacts_stat(path).await?;
 
         let status = res.status();

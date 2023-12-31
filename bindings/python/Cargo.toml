@@ -53,13 +53,15 @@ services-all = [
   "services-cacache",
   "services-dashmap",
   "services-dropbox",
-  "services-etcd",
+  # FIXME this service need protoc
+  # "services-etcd",
   # FIXME this requires a preinstalled fdb library
   # "services-foundationdb",
-  "services-ftp",
+  # "services-ftp",
   "services-gdrive",
   # FIXME how to support HDFS services in bindings?
   # "services-hdfs",
+  "services-huggingface",
   "services-ipfs",
   "services-memcached",
   "services-mini-moka",
@@ -70,17 +72,23 @@ services-all = [
   "services-mysql",
   "services-redb",
   "services-redis",
-  "services-rocksdb",
+  # FIXME how to support rocksdb services in bindings?
+  # "services-rocksdb",
   "services-sled",
   "services-supabase",
   "services-swift",
-  "services-tikv",
+  # FIXME this service need protoc
+  # "services-tikv",
   "services-vercel-artifacts",
   "services-wasabi",
   "services-mongodb",
   "services-gridfs",
   "services-sqlite",
   "services-libsql",
+  "services-alluxio",
+  "services-b2",
+  "services-seafile",
+  "services-upyun",
 ]
 
 # Default services provided by opendal.
@@ -100,7 +108,10 @@ services-webdav = ["opendal/services-webdav"]
 services-webhdfs = ["opendal/services-webhdfs"]
 
 # Optional services provided by opendal.
+services-alluxio = ["opendal/services-alluxio"]
 services-azfile = ["opendal/services-azfile"]
+services-b2 = ["opendal/services-b2"]
+services-upyun = ["opendal/services-upyun"]
 services-cacache = ["opendal/services-cacache"]
 services-dashmap = ["opendal/services-dashmap"]
 services-dropbox = ["opendal/services-dropbox"]
@@ -110,6 +121,7 @@ services-ftp = ["opendal/services-ftp"]
 services-gdrive = ["opendal/services-gdrive"]
 services-gridfs = ["opendal/services-gridfs"]
 services-hdfs = ["opendal/services-hdfs"]
+services-huggingface = ["opendal/services-huggingface"]
 services-ipfs = ["opendal/services-ipfs"]
 services-libsql = ["opendal/services-libsql"]
 services-memcached = ["opendal/services-memcached"]
@@ -126,6 +138,7 @@ services-rocksdb = ["opendal/services-rocksdb"]
 services-sftp = ["opendal/services-sftp"]
 services-sled = ["opendal/services-sled"]
 services-sqlite = ["opendal/services-sqlite"]
+services-seafile = ["opendal/services-seafile"]
 services-supabase = ["opendal/services-supabase"]
 services-swift = ["opendal/services-swift"]
 services-tikv = ["opendal/services-tikv"]
@@ -139,6 +152,6 @@ doc = false
 [dependencies]
 futures = "0.3.28"
 opendal.workspace = true
-pyo3 = "0.19"
-pyo3-asyncio = { version = "0.19", features = ["tokio-runtime"] }
+pyo3 = "0.20"
+pyo3-asyncio = { version = "0.20", features = ["tokio-runtime"] }
 tokio = "1"
